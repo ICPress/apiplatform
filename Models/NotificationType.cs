@@ -1,0 +1,14 @@
+public enum NotificationType {
+    INFORMATION = 0,
+    REWARD = 1,
+
+    FOLLOW_RECEIVED = 2,
+    LIKE_RECEIVED = 3,
+    COMMENT_LIKE_RECEIVED = 4,
+    COMMENT_REPLY_RECEIVED = 5,
+    COMMENT_RECEIVED = 6,
+    GIFT_UNWRAPPED = 7,
+    MESSAGE_RECEIVED = 8,
+    ARTICLE_REJECTED = 9
+
+}
