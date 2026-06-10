@@ -31,6 +31,18 @@ public class ArticleController : ControllerBase
         _logger = logger;
         _serverSettings = serverSettings;
     }
+    private readonly string SearchArticleByTagQuery = @"
+                SELECT st.slug_title
+                FROM story_tags st
+                JOIN user_stories us ON us.slug_title = st.slug_title
+                LEFT JOIN article_pending_review rev ON rev.slug_title = st.slug_title
+                WHERE st.tag = @tag
+                AND rev.slug_title IS NULL
+                GROUP BY st.slug_title, us.story_id
+                HAVING MAX(st.tag_type = 'tag') > 0
+                    OR (MAX(st.tag_type = 'meta') > 0 AND MAX(st.tag_type = 'tag') = 0)
+                ORDER BY us.story_id DESC
+                LIMIT @count OFFSET @offset";
 
     [HttpGet("guidelines")]
     public ArticleGuidelines GetArticleGuidelines()
@@ -298,7 +310,6 @@ public class ArticleController : ControllerBase
     public async Task<List<StoryPublishedModel>> GetRecommededArticlesByTag(string username, string? hashtag = null, int count = 10, int offset = 0)
     {
         var storyArticles = new List<StoryPublishedModel>();
-        if (hashtag != null && hashtag.Length <= 3) return storyArticles;
         if (count <= 0 || offset < 0 || count >= 20) return storyArticles;
 
         // Get role for pending review hydration — null is fine for non-admin users
@@ -386,14 +397,7 @@ public class ArticleController : ControllerBase
 
             if (hashtag != null)
             {
-                var cmd = new MySqlCommand(@"
-            SELECT st.slug_title
-            FROM story_tags st
-            JOIN user_stories us ON us.slug_title = st.slug_title
-            WHERE st.tag = @tag
-            ORDER BY us.story_id DESC
-            LIMIT @count OFFSET @offset
-        ", connectionStory);
+                var cmd = new MySqlCommand(SearchArticleByTagQuery, connectionStory);
 
                 cmd.Parameters.AddWithValue("@tag", hashtag.ToLower());
                 cmd.Parameters.AddWithValue("@count", count);
@@ -465,7 +469,6 @@ public class ArticleController : ControllerBase
     public async Task<List<StoryPublishedModel>> GetArticlesByTagLatest(string? hashtag = null, int count = 10, int offset = 0)
     {
         var storyArticles = new List<StoryPublishedModel>();
-        if (hashtag != null && hashtag.Length <= 3) return storyArticles;
         if (count <= 0 || offset < 0) return storyArticles;
 
         using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
@@ -480,15 +483,7 @@ public class ArticleController : ControllerBase
 
         if (hashtag != null)
         {
-            var cmd = new MySqlCommand(@"
-            SELECT st.slug_title
-            FROM story_tags st
-            JOIN user_stories us ON us.slug_title = st.slug_title
-            LEFT JOIN article_pending_review rev on rev.slug_title = st.slug_title
-            WHERE st.tag = @tag and rev.slug_title IS NULL
-            ORDER BY us.story_id DESC
-            LIMIT @count OFFSET @offset
-        ", connectionStory);
+            var cmd = new MySqlCommand(SearchArticleByTagQuery, connectionStory);
 
             cmd.Parameters.AddWithValue("@tag", hashtag.ToLower());
             cmd.Parameters.AddWithValue("@count", count);

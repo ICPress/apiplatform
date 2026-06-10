@@ -38,7 +38,7 @@ public class TagController : ControllerBase
     public List<string> FindArticleTag(string searchvalue)
     {
         var foundTags = new List<string>(5);
-        if (searchvalue.Length <= 3) return foundTags;
+        if (searchvalue.Length <= 1) return foundTags;
         string currentTag;
 
         using MySqlConnection connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));

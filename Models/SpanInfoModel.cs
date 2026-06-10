@@ -13,6 +13,6 @@ public class SpanInfoModel
     [JsonPropertyName("style")]
     public TextStyleModel Style { get; set; }
 
-    [JsonPropertyName("additionalinfoflag")]
+    [JsonPropertyName("additionalInfoFlag")]
     public string? AdditionalInfoFlag { get; set; } = null;
 }
