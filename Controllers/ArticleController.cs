@@ -32,17 +32,16 @@ public class ArticleController : ControllerBase
         _serverSettings = serverSettings;
     }
     private readonly string SearchArticleByTagQuery = @"
-                SELECT st.slug_title
-                FROM story_tags st
-                JOIN user_stories us ON us.slug_title = st.slug_title
-                LEFT JOIN article_pending_review rev ON rev.slug_title = st.slug_title
-                WHERE st.tag = @tag
-                AND rev.slug_title IS NULL
-                GROUP BY st.slug_title, us.story_id
-                HAVING MAX(st.tag_type = 'tag') > 0
-                    OR (MAX(st.tag_type = 'meta') > 0 AND MAX(st.tag_type = 'tag') = 0)
-                ORDER BY us.story_id DESC
-                LIMIT @count OFFSET @offset";
+        SELECT st.slug_title
+        FROM story_tags st
+        JOIN user_stories us ON us.slug_title = st.slug_title
+        LEFT JOIN article_pending_review rev ON rev.slug_title = st.slug_title
+        WHERE st.tag = @tag
+        AND st.tag_type IN ('tag', 'meta', 'topic')
+        AND rev.slug_title IS NULL
+        GROUP BY st.slug_title
+        ORDER BY us.story_id DESC
+        LIMIT @count OFFSET @offset";
 
     [HttpGet("guidelines")]
     public ArticleGuidelines GetArticleGuidelines()
