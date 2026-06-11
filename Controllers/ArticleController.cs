@@ -923,34 +923,55 @@ public class ArticleController : ControllerBase
 
         try
         {
-            if (!await aCache.WithKeepBinary<string, StorySavedModel>().PutIfAbsentAsync(storyModel.SlugTitle, storyModel))
+            // Always check DB first, regardless of cache state
+            var mySqlCommandCheckExistingPost = new MySql.Data.MySqlClient.MySqlCommand();
+            mySqlCommandCheckExistingPost.CommandText = @"
+                SELECT s.slug_title, s.username,
+                    s.published_at = (SELECT MAX(published_at) FROM user_stories WHERE username = s.username) AS is_latest
+                FROM user_stories s
+                WHERE s.slug_title = @slug_title
+                LIMIT 1";
+            mySqlCommandCheckExistingPost.Connection = connectionStory;
+            mySqlCommandCheckExistingPost.Parameters.AddWithValue("@slug_title", storyModel.SlugTitle);
+
+            string? existingSlugTitle = null;
+            string? existingUsername = null;
+            bool isLatest = false;
+
+            using (var reader = await mySqlCommandCheckExistingPost.ExecuteReaderAsync())
             {
-                var mySqlCommandCheckExistingPost = new MySql.Data.MySqlClient.MySqlCommand();
-                mySqlCommandCheckExistingPost.CommandText = "SELECT slug_title FROM user_stories WHERE username = @username ORDER BY published_at DESC LIMIT 1";
-                mySqlCommandCheckExistingPost.Connection = connectionStory;
-                mySqlCommandCheckExistingPost.Parameters.AddWithValue("@username", storyModel.AuthorName);
-
-                string? latestSlugTitle = (string?)await mySqlCommandCheckExistingPost.ExecuteScalarAsync();
-
-                if (latestSlugTitle != null && latestSlugTitle.Equals(storyModel.SlugTitle))
+                if (await reader.ReadAsync())
                 {
+                    existingSlugTitle = reader.GetString(reader.GetOrdinal("slug_title"));
+                    existingUsername = reader.GetString(reader.GetOrdinal("username"));
+                    isLatest = reader.GetBoolean(reader.GetOrdinal("is_latest"));
+                }
+            }
+
+            if (existingSlugTitle != null)
+            {
+                if (existingUsername != null && existingUsername.Equals(storyModel.AuthorName) && isLatest)
+                {
+                    // Duplicate of this user's own latest article — treat as idempotent re-publish
                     _logger.LogError("Story already published with slug_title: {0}", storyModel.SlugTitle);
-                    return latestSlugTitle;
+                    return existingSlugTitle;
                 }
 
+                // Slug is taken by another user, or it's not this user's latest — append timestamp
                 const int maxSlugLength = 60;
-                var dateSuffix = " " + DateTime.UtcNow.ToString("g", DateTimeFormatInfo.InvariantInfo); // 17 chars
+                var dateSuffix = " " + DateTime.UtcNow.ToString("g", DateTimeFormatInfo.InvariantInfo);
                 var truncatedTitle = storyModel.SlugTitle.Length + dateSuffix.Length > maxSlugLength
                     ? storyModel.SlugTitle[..(maxSlugLength - dateSuffix.Length)]
                     : storyModel.SlugTitle;
 
                 storyModel.SlugTitle = helper.GenerateSlug(truncatedTitle + dateSuffix);
                 _logger.LogDebug("Slug collision — new URL title: {0}", storyModel.SlugTitle);
-
-                if (!await aCache.WithKeepBinary<string, StorySavedModel>().PutIfAbsentAsync(storyModel.SlugTitle, storyModel))
-                    throw new ArgumentNullException("storyModel.StoryTitle", "Article title is taken");
             }
 
+            // Now attempt to claim the slug in cache — whether original or timestamped
+            if (!await aCache.WithKeepBinary<string, StorySavedModel>().PutIfAbsentAsync(storyModel.SlugTitle, storyModel))
+                throw new ArgumentNullException("storyModel.StoryTitle", "Article title is taken");
+           
             _logger.LogDebug("Story URL-title resolved to {0}", storyModel.SlugTitle);
 
             myTrans = await connectionStory.BeginTransactionAsync();
