@@ -272,7 +272,7 @@ public class ArticleController : ControllerBase
     }
 
     [HttpGet("title/{slugTitle}")]
-    public async Task<StoryPublishedModel?> GetArticle(string slugTitle)
+    public async Task<ActionResult<StoryPublishedModel>> GetArticle(string slugTitle)
     {
         var storyArticle = new List<StoryPublishedModel>();
         using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
@@ -292,7 +292,14 @@ public class ArticleController : ControllerBase
             await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticle);
         }
 
-        return storyArticle.FirstOrDefault();
+        var article = storyArticle.FirstOrDefault();
+
+        if (article == null)
+        {
+            return NotFound();
+        }
+
+        return Ok(article);
     }
 
 
