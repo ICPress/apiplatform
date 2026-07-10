@@ -39,8 +39,10 @@ public class StorySavedModel : IAuthorEntity
     [JsonPropertyName("privateSources")]
     public List<ArticlePrivateSource> PrivateSources { get; set; } = new List<ArticlePrivateSource>();
 
-    [JsonPropertyName("publicSources")]
-    public List<string> PublicSources { get; set; } = new List<string>();
+     [JsonPropertyName("publicSources")]
+    public List<string> PublicSources { get; set; } = new List<string>(); 
+    [JsonPropertyName("references")]
+    public List<PublicSourceModel> References { get; set; } = new List<PublicSourceModel>();
 
     [JsonPropertyName("storyMap")]
     public StoryMap? StoryMap { get; set; } = null;

@@ -31,6 +31,13 @@ public class ArticleController : ControllerBase
         _logger = logger;
         _serverSettings = serverSettings;
     }
+    // Explicitly minified — no indentation/newlines — for anything persisted to
+    // MySQL (user_story_log) or serialized before being written to Ignite.
+    private static readonly JsonSerializerOptions CompactJsonOptions = new JsonSerializerOptions
+    {
+        WriteIndented = false
+    };
+
     private readonly string SearchArticleByTagQuery = @"
         SELECT st.slug_title
         FROM story_tags st
@@ -267,6 +274,7 @@ public class ArticleController : ControllerBase
         }
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
+        await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
 
         return storyArticles;
     }
@@ -290,12 +298,17 @@ public class ArticleController : ControllerBase
         {
             storyArticle.Add(new StoryPublishedModel(res, false));
             await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticle);
+            await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticle);
         }
 
         var article = storyArticle.FirstOrDefault();
 
         if (article == null)
         {
+            if (await DeletedStoriesUtil.IsSlugDeletedAsync(connectionStory, slugTitle))
+            {
+                return StatusCode(410);
+            }
             return NotFound();
         }
 
@@ -381,6 +394,7 @@ public class ArticleController : ControllerBase
             // Preload metadata for newly added pending articles
             if (newPendingArticles.Count > 0)
                 await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, newPendingArticles);
+                await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, newPendingArticles);
         }
 
 
@@ -459,6 +473,7 @@ public class ArticleController : ControllerBase
 
         // 4. Preload Metadata
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
+        await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
 
         return storyArticles;
     }
@@ -533,6 +548,7 @@ public class ArticleController : ControllerBase
         }
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connectionGorse, connectionStory, storyArticles);
+        await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
 
         return storyArticles;
     }
@@ -586,6 +602,7 @@ public class ArticleController : ControllerBase
         }
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connectionGorse, connectionStory, storyArticles);
+        await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
 
         return storyArticles;
     }
@@ -699,6 +716,7 @@ public class ArticleController : ControllerBase
                 }
             }
             await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, userFollowed.NewStories);
+            await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, userFollowed.NewStories);
         }
 
         // 4. Update latest check timestamp
@@ -753,6 +771,7 @@ public class ArticleController : ControllerBase
         }
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
+        await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
         return storyArticles;
     }
 
@@ -855,6 +874,7 @@ public class ArticleController : ControllerBase
         }
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
+        await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
         return storyArticles;
     }
 
@@ -927,6 +947,7 @@ public class ArticleController : ControllerBase
         storyModel.Tags = storyModel.Tags?.Select(x => x.ToLower())?.ToList();
         storyModel.IsReviewed = !_serverSettings.RequireArticleReview || role == ConfigUtil.JWT_ADMIN_ROLE;
         ArticleUtil.SanitizeStylingInfo(storyModel.StylingInfo, storyModel.ContentText?.Length ?? 1);
+        await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
 
         try
         {
@@ -1003,7 +1024,7 @@ public class ArticleController : ControllerBase
             mySqlCommandLog.Parameters.AddWithValue("@slug_title", storyModel.SlugTitle);
             mySqlCommandLog.Parameters.AddWithValue("@story_title", storyModel.StoryTitle ?? string.Empty);
             mySqlCommandLog.Parameters.AddWithValue("@empty_title", storyModel.EmptyTitle ?? string.Empty);
-            mySqlCommandLog.Parameters.AddWithValue("@story", JsonSerializer.Serialize(storyModel));
+            mySqlCommandLog.Parameters.AddWithValue("@story", JsonSerializer.Serialize(storyModel, CompactJsonOptions));
 
             if (await mySqlCommandLog.ExecuteNonQueryAsync() <= 0)
                 throw new Exception("Could not write story publish log!");
@@ -1091,6 +1112,7 @@ public class ArticleController : ControllerBase
         await using var connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(
             ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
         await connectionStory.OpenAsync();
+        await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
 
         _logger.LogDebug("Update request for user {0}, story {1}", storyModel.AuthorName, storyModel.StoryTitle);
 
@@ -1135,7 +1157,7 @@ public class ArticleController : ControllerBase
             mySqlCommandInsert.Parameters.AddWithValue("@slug_title", slugTitle);
             mySqlCommandInsert.Parameters.AddWithValue("@story_title", storyModel.StoryTitle ?? string.Empty);
             mySqlCommandInsert.Parameters.AddWithValue("@empty_title", storyModel.EmptyTitle ?? string.Empty);
-            mySqlCommandInsert.Parameters.AddWithValue("@story", JsonSerializer.Serialize(storyModel));
+            mySqlCommandInsert.Parameters.AddWithValue("@story", JsonSerializer.Serialize(storyModel, CompactJsonOptions));
 
             if (await mySqlCommandInsert.ExecuteNonQueryAsync() <= 0)
                 return StatusCode(500);

@@ -1,0 +1,209 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using MySql.Data.MySqlClient;
+
+/// <summary>
+/// Resolves StorySavedModel.PublicSources against the known_public_sources lookup table
+/// and normalizes reference indices so they always sit at a sentence boundary within
+/// the article's ContentText. Call ResolvePublicSourcesAsync right before persisting
+/// a story on both publish and update.
+/// </summary>
+public static class PublicSourceResolver
+{
+    private static readonly char[] SentenceBoundaryChars = { '.', ';' };
+
+    public static async Task ResolvePublicSourcesAsync(
+        MySqlConnection connection,
+        StorySavedModel storyModel,
+        MySqlTransaction? transaction = null)
+    {
+        if (storyModel?.References == null || storyModel.References.Count == 0)
+            return;
+
+        var contentText = storyModel.ContentText ?? string.Empty;
+
+        foreach (var source in storyModel.References)
+        {
+            if (source == null)
+                continue;
+
+            // Correct/clamp reference indices against the final ContentText before saving.
+            if (source.References != null)
+            {
+                foreach (var reference in source.References)
+                {
+                    if (reference?.ReferenceIndex == null)
+                        continue;
+
+                    for (int i = 0; i < reference.ReferenceIndex.Count; i++)
+                    {
+                        reference.ReferenceIndex[i] = CorrectIndexToSentenceBoundary(
+                            reference.ReferenceIndex[i], contentText);
+                    }
+                }
+            }
+
+            // Reset any client-supplied value; SourceId is always server-resolved.
+            source.SourceId = await LookupSourceIdByUrlAsync(connection, transaction, source.Url);
+
+            // SourceName is read-only: never accept it from the client, never persist
+            // a stale copy. It is only ever populated when an article is fetched.
+            source.SourceName = null;
+        }
+    }
+
+    /// <summary>
+    /// Read-only lookup: populates PublicSourceModel.SourceName for every source that has a
+    /// SourceId, across all supplied stories, in a single batched query. This never inserts,
+    /// updates, or deletes rows in known_public_sources — call it whenever articles are
+    /// fetched for display (never on publish/update).
+    /// </summary>
+    public static async Task PopulateSourceNamesAsync(
+        MySqlConnection connection,
+        IEnumerable<StorySavedModel> stories,
+        MySqlTransaction? transaction = null)
+    {
+        if (stories == null)
+            return;
+
+        var storyList = stories.Where(s => s?.References != null).ToList();
+
+        var sourceIds = storyList
+            .SelectMany(s => s.References)
+            .Where(p => p?.SourceId != null)
+            .Select(p => p!.SourceId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (sourceIds.Count == 0)
+            return;
+
+        var idToName = new Dictionary<int, string>();
+        var paramNames = sourceIds.Select((_, i) => "@id" + i).ToList();
+
+        var cmd = new MySqlCommand();
+        cmd.Connection = connection;
+        if (transaction != null)
+            cmd.Transaction = transaction;
+        cmd.CommandText = $"SELECT source_id, source_name FROM known_public_sources WHERE source_id IN ({string.Join(",", paramNames)})";
+        for (int i = 0; i < sourceIds.Count; i++)
+            cmd.Parameters.AddWithValue(paramNames[i], sourceIds[i]);
+
+        await using (var reader = await cmd.ExecuteReaderAsync())
+        {
+            int idOrdinal = reader.GetOrdinal("source_id");
+            int nameOrdinal = reader.GetOrdinal("source_name");
+            while (await reader.ReadAsync())
+                idToName[reader.GetInt32(idOrdinal)] = reader.GetString(nameOrdinal);
+        }
+
+        foreach (var story in storyList)
+        {
+            foreach (var source in story.References)
+            {
+                if (source?.SourceId == null)
+                    continue;
+
+                source.SourceName = idToName.TryGetValue(source.SourceId.Value, out var name)
+                    ? name
+                    : null;
+            }
+        }
+    }
+
+    private static async Task<int?> LookupSourceIdByUrlAsync(
+        MySqlConnection connection, MySqlTransaction? transaction, string? url)
+    {
+        var host = ExtractHost(url);
+        if (string.IsNullOrEmpty(host))
+            return null;
+
+        var cmd = new MySqlCommand();
+        cmd.Connection = connection;
+        if (transaction != null)
+            cmd.Transaction = transaction;
+        cmd.CommandText = "SELECT source_id FROM known_public_sources WHERE host_name = @host_name LIMIT 1";
+        cmd.Parameters.AddWithValue("@host_name", host);
+
+        var result = await cmd.ExecuteScalarAsync();
+        if (result == null || result == DBNull.Value)
+            return null;
+
+        return Convert.ToInt32(result);
+    }
+
+    private static string? ExtractHost(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return null;
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return null;
+
+        var host = uri.Host;
+        if (host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
+            host = host.Substring(4);
+
+        return host.ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Moves index to just after the nearest '.' or ';' found by scanning both left and
+    /// right from index within contentText. Ties go to the left. If no sentence boundary
+    /// exists on either side, the index is only clamped to the content bounds.
+    /// The result is always within [0, contentText.Length].
+    /// </summary>
+    internal static int CorrectIndexToSentenceBoundary(int index, string contentText)
+    {
+        int len = contentText?.Length ?? 0;
+        if (len == 0)
+            return 0;
+
+        int clamped = Math.Max(0, Math.Min(index, len));
+
+        int leftBoundary = -1;
+        for (int p = Math.Min(clamped, len - 1); p >= 0; p--)
+        {
+            if (SentenceBoundaryChars.Contains(contentText![p]))
+            {
+                leftBoundary = p;
+                break;
+            }
+        }
+
+        int rightBoundary = -1;
+        for (int p = clamped; p < len; p++)
+        {
+            if (SentenceBoundaryChars.Contains(contentText![p]))
+            {
+                rightBoundary = p;
+                break;
+            }
+        }
+
+        int corrected;
+        if (leftBoundary == -1 && rightBoundary == -1)
+        {
+            // No sentence boundary anywhere in the content — just keep the clamped index.
+            corrected = clamped;
+        }
+        else if (leftBoundary == -1)
+        {
+            corrected = rightBoundary + 1;
+        }
+        else if (rightBoundary == -1)
+        {
+            corrected = leftBoundary + 1;
+        }
+        else
+        {
+            int leftDistance = clamped - leftBoundary;
+            int rightDistance = rightBoundary - clamped;
+            corrected = leftDistance <= rightDistance ? leftBoundary + 1 : rightBoundary + 1;
+        }
+
+        return Math.Max(0, Math.Min(corrected, len));
+    }
+}
