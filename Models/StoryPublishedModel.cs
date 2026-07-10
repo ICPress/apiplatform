@@ -16,7 +16,7 @@ public class StoryPublishedModel : StorySavedModel, IAuthorEntityPublished
         this.LangCode = savedModel.LangCode;
         this.AuthorName = savedModel.AuthorName;
         this.Timestamp = savedModel.Timestamp;
-        this.References = savedModel.References;
+        this.Sources = savedModel.Sources;
         if (isAdmin) this.PrivateSources = savedModel.PrivateSources;
         this.StoryMap = savedModel.StoryMap;
         this.Category = savedModel.Category;

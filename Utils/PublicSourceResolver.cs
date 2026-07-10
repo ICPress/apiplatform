@@ -19,12 +19,12 @@ public static class PublicSourceResolver
         StorySavedModel storyModel,
         MySqlTransaction? transaction = null)
     {
-        if (storyModel?.References == null || storyModel.References.Count == 0)
+        if (storyModel?.Sources == null || storyModel.Sources.Count == 0)
             return;
 
         var contentText = storyModel.ContentText ?? string.Empty;
 
-        foreach (var source in storyModel.References)
+        foreach (var source in storyModel.Sources)
         {
             if (source == null)
                 continue;
@@ -34,13 +34,13 @@ public static class PublicSourceResolver
             {
                 foreach (var reference in source.References)
                 {
-                    if (reference?.ReferenceIndex == null)
+                    if (reference?.Index == null)
                         continue;
 
-                    for (int i = 0; i < reference.ReferenceIndex.Count; i++)
+                    for (int i = 0; i < reference.Index.Count; i++)
                     {
-                        reference.ReferenceIndex[i] = CorrectIndexToSentenceBoundary(
-                            reference.ReferenceIndex[i], contentText);
+                        reference.Index[i] = CorrectIndexToSentenceBoundary(
+                            reference.Index[i], contentText);
                     }
                 }
             }
@@ -68,10 +68,10 @@ public static class PublicSourceResolver
         if (stories == null)
             return;
 
-        var storyList = stories.Where(s => s?.References != null).ToList();
+        var storyList = stories.Where(s => s?.Sources != null).ToList();
 
         var sourceIds = storyList
-            .SelectMany(s => s.References)
+            .SelectMany(s => s.Sources)
             .Where(p => p?.SourceId != null)
             .Select(p => p!.SourceId!.Value)
             .Distinct()
@@ -101,7 +101,7 @@ public static class PublicSourceResolver
 
         foreach (var story in storyList)
         {
-            foreach (var source in story.References)
+            foreach (var source in story.Sources)
             {
                 if (source?.SourceId == null)
                     continue;

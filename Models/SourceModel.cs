@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using System.Collections.Generic;
 
-public class PublicSourceModel
+public class SourceModel
 {
     [JsonPropertyName("url")]
     public string Url { get; set; } = string.Empty;
@@ -22,5 +22,5 @@ public class PublicSourceModel
     public string? SourceName { get; set; } = null;
 
     [JsonPropertyName("references")]
-    public List<PublicSourceReferenceModel>? References { get; set; } = null;
+    public List<ReferenceModel>? References { get; set; } = null;
 }
