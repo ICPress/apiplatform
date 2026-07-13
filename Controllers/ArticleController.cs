@@ -948,6 +948,8 @@ public class ArticleController : ControllerBase
         storyModel.IsReviewed = !_serverSettings.RequireArticleReview || role == ConfigUtil.JWT_ADMIN_ROLE;
         ArticleUtil.SanitizeStylingInfo(storyModel.StylingInfo, storyModel.ContentText?.Length ?? 1);
         await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
+        await PublicSourceResolver.UpsertKnownSourcesAsync(connectionStory, storyModel.Sources);
+        storyModel.Sources.ForEach(x => x.SourceName = null); //clear source names to avoid storing them in the cache
 
         try
         {
@@ -1107,12 +1109,15 @@ public class ArticleController : ControllerBase
         var mainTitle = (storyModel?.StoryTitle == null || storyModel.StoryTitle.Length == 0)
             ? storyModel.EmptyTitle : storyModel.StoryTitle;
         ArticleUtil.SanitizeStylingInfo(storyModel.StylingInfo, storyModel.ContentText?.Length ?? 1);
+        storyModel.Updated = DateTime.UtcNow;
 
         using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         await using var connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(
             ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
         await connectionStory.OpenAsync();
         await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
+        await PublicSourceResolver.UpsertKnownSourcesAsync(connectionStory, storyModel.Sources);
+        storyModel.Sources.ForEach(x => x.SourceName = null); //clear source names to avoid storing them in the cache
 
         _logger.LogDebug("Update request for user {0}, story {1}", storyModel.AuthorName, storyModel.StoryTitle);
 

@@ -113,6 +113,43 @@ public static class PublicSourceResolver
         }
     }
 
+    /// <summary>
+    /// For every Source with a non-null SourceName, extracts the host from its Url and, if
+    /// that host isn't already in known_public_sources, inserts it with the given SourceName.
+    /// Uses INSERT IGNORE against the unique host_name key, so this is a race-safe equivalent
+    /// of "check if it exists, insert only if it doesn't" and it never overwrites/updates an
+    /// existing row — an already-known host's source_name is left exactly as-is.
+    ///
+    /// NOTE: assumes SourceModel exposes `Url` (string) and `SourceName` (string?). Adjust the
+    /// two property accesses below if the actual class differs.
+    /// </summary>
+    public static async Task UpsertKnownSourcesAsync(
+        MySqlConnection connection,
+        IEnumerable<SourceModel>? sources,
+        MySqlTransaction? transaction = null)
+    {
+        if (sources == null)
+            return;
+
+        foreach (var source in sources)
+        {
+            if (source?.SourceName == null)
+                continue;
+
+            var host = ExtractHost(source.Url);
+            if (string.IsNullOrEmpty(host))
+                continue;
+
+            var cmd = new MySqlCommand();
+            cmd.Connection = connection;
+            if (transaction != null)
+                cmd.Transaction = transaction;
+            cmd.CommandText = "INSERT IGNORE INTO known_public_sources (host_name, source_name) VALUES (@host_name, @source_name)";
+            cmd.Parameters.AddWithValue("@host_name", host);
+            cmd.Parameters.AddWithValue("@source_name", source.SourceName);
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
     private static async Task<int?> LookupSourceIdByUrlAsync(
         MySqlConnection connection, MySqlTransaction? transaction, string? url)
     {

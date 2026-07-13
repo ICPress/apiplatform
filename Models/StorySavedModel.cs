@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using System.Collections.Generic;
 
-public class StorySavedModel : IAuthorEntity
+public class StorySavedModel  : IAuthorEntity
 {
     [JsonPropertyName("stylingInfo")]
     public StylingInfoModel StylingInfo { get; set; } = new StylingInfoModel();
@@ -41,7 +41,7 @@ public class StorySavedModel : IAuthorEntity
 
      [JsonPropertyName("publicSources")]
     public List<string> PublicSources { get; set; } = new List<string>(); 
-    
+
     [JsonPropertyName("sources")]
     public List<SourceModel> Sources { get; set; } = new List<SourceModel>();
 
@@ -50,4 +50,8 @@ public class StorySavedModel : IAuthorEntity
 
     [JsonPropertyName("category")]
     public string? Category { get; set; } = null;
+
+    [JsonPropertyName("updated")]
+    public DateTime? Updated { get; set; }
+
 }
