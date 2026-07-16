@@ -275,6 +275,7 @@ public class ArticleController : ControllerBase
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
         await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
+        PublicSourceResolver.MapSourceUrlsToPublicSources(storyArticles);
 
         return storyArticles;
     }
@@ -299,6 +300,7 @@ public class ArticleController : ControllerBase
             storyArticle.Add(new StoryPublishedModel(res, false));
             await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticle);
             await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticle);
+            PublicSourceResolver.MapSourceUrlsToPublicSources(storyArticle);
         }
 
         var article = storyArticle.FirstOrDefault();
@@ -395,6 +397,7 @@ public class ArticleController : ControllerBase
             if (newPendingArticles.Count > 0)
                 await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, newPendingArticles);
                 await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, newPendingArticles);
+                PublicSourceResolver.MapSourceUrlsToPublicSources(newPendingArticles);
         }
 
 
@@ -474,6 +477,7 @@ public class ArticleController : ControllerBase
         // 4. Preload Metadata
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
         await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
+        PublicSourceResolver.MapSourceUrlsToPublicSources(storyArticles);
 
         return storyArticles;
     }
@@ -549,6 +553,7 @@ public class ArticleController : ControllerBase
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connectionGorse, connectionStory, storyArticles);
         await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
+        PublicSourceResolver.MapSourceUrlsToPublicSources(storyArticles);
 
         return storyArticles;
     }
@@ -603,6 +608,7 @@ public class ArticleController : ControllerBase
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connectionGorse, connectionStory, storyArticles);
         await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
+        PublicSourceResolver.MapSourceUrlsToPublicSources(storyArticles);
 
         return storyArticles;
     }
@@ -717,6 +723,7 @@ public class ArticleController : ControllerBase
             }
             await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, userFollowed.NewStories);
             await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, userFollowed.NewStories);
+            PublicSourceResolver.MapSourceUrlsToPublicSources(userFollowed.NewStories);
         }
 
         // 4. Update latest check timestamp
@@ -772,6 +779,7 @@ public class ArticleController : ControllerBase
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
         await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
+        PublicSourceResolver.MapSourceUrlsToPublicSources(storyArticles);
         return storyArticles;
     }
 
@@ -875,6 +883,7 @@ public class ArticleController : ControllerBase
 
         await ArticleUtil.PreloadArticlesMetadataAsync(connection, connectionStory, storyArticles);
         await PublicSourceResolver.PopulateSourceNamesAsync(connectionStory, storyArticles);
+        PublicSourceResolver.MapSourceUrlsToPublicSources(storyArticles);
         return storyArticles;
     }
 
@@ -947,10 +956,8 @@ public class ArticleController : ControllerBase
         storyModel.Tags = storyModel.Tags?.Select(x => x.ToLower())?.ToList();
         storyModel.IsReviewed = !_serverSettings.RequireArticleReview || role == ConfigUtil.JWT_ADMIN_ROLE;
         ArticleUtil.SanitizeStylingInfo(storyModel.StylingInfo, storyModel.ContentText?.Length ?? 1);
-        await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
         await PublicSourceResolver.UpsertKnownSourcesAsync(connectionStory, storyModel.Sources);
-        storyModel.Sources.ForEach(x => x.SourceName = null); //clear source names to avoid storing them in the cache
-
+        await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
         try
         {
             // Always check DB first, regardless of cache state
@@ -998,7 +1005,6 @@ public class ArticleController : ControllerBase
                 _logger.LogDebug("Slug collision — new URL title: {0}", storyModel.SlugTitle);
             }
 
-            // Now attempt to claim the slug in cache — whether original or timestamped
             if (!await aCache.WithKeepBinary<string, StorySavedModel>().PutIfAbsentAsync(storyModel.SlugTitle, storyModel))
                 throw new ArgumentNullException("storyModel.StoryTitle", "Article title is taken");
            
@@ -1115,10 +1121,9 @@ public class ArticleController : ControllerBase
         await using var connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(
             ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
         await connectionStory.OpenAsync();
-        await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
         await PublicSourceResolver.UpsertKnownSourcesAsync(connectionStory, storyModel.Sources);
-        storyModel.Sources.ForEach(x => x.SourceName = null); //clear source names to avoid storing them in the cache
 
+        await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
         _logger.LogDebug("Update request for user {0}, story {1}", storyModel.AuthorName, storyModel.StoryTitle);
 
         var aCache = ArticleUtil.GetArticleCacheWithTtl(client);
@@ -1153,6 +1158,9 @@ public class ArticleController : ControllerBase
             storyModel.Timestamp = oldStory.Timestamp;
             storyModel.Tags = oldStory.Tags;
 
+            storyModel.Sources = oldStory.Sources;
+            PublicSourceResolver.RealignReferenceIndexes(storyModel);
+
             // Log old version before overwriting — include titles for searchability
             var mySqlCommandInsert = new MySql.Data.MySqlClient.MySqlCommand();
             mySqlCommandInsert.CommandText =
@@ -1170,7 +1178,7 @@ public class ArticleController : ControllerBase
 
             _logger.LogDebug("Updating story {0} in Ignite", slugTitle);
 
-            if (!await aCache.WithKeepBinary<string, StorySavedModel>().ReplaceAsync(slugTitle, storyModel))
+            if (!await aCache.ReplaceAsync(slugTitle, storyModel))
             {
                 _logger.LogInformation("Story {0} missing in Ignite during update", slugTitle);
             }

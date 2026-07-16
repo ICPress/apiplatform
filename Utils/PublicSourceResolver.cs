@@ -22,28 +22,12 @@ public static class PublicSourceResolver
         if (storyModel?.Sources == null || storyModel.Sources.Count == 0)
             return;
 
-        var contentText = storyModel.ContentText ?? string.Empty;
+        RealignReferenceIndexes(storyModel);
 
         foreach (var source in storyModel.Sources)
         {
             if (source == null)
                 continue;
-
-            // Correct/clamp reference indices against the final ContentText before saving.
-            if (source.References != null)
-            {
-                foreach (var reference in source.References)
-                {
-                    if (reference?.Index == null)
-                        continue;
-
-                    for (int i = 0; i < reference.Index.Count; i++)
-                    {
-                        reference.Index[i] = CorrectIndexToSentenceBoundary(
-                            reference.Index[i], contentText);
-                    }
-                }
-            }
 
             // Reset any client-supplied value; SourceId is always server-resolved.
             source.SourceId = await LookupSourceIdByUrlAsync(connection, transaction, source.Url);
@@ -51,6 +35,56 @@ public static class PublicSourceResolver
             // SourceName is read-only: never accept it from the client, never persist
             // a stale copy. It is only ever populated when an article is fetched.
             source.SourceName = null;
+        }
+    }
+
+    public static void RealignReferenceIndexes(StorySavedModel storyModel)
+    {
+        if (storyModel?.Sources == null || storyModel.Sources.Count == 0)
+            return;
+
+        var contentText = storyModel.ContentText ?? string.Empty;
+
+        foreach (var source in storyModel.Sources)
+        {
+            if (source?.References == null)
+                continue;
+
+            foreach (var reference in source.References)
+            {
+                if (reference?.Index == null)
+                    continue;
+
+                for (int i = 0; i < reference.Index.Count; i++)
+                {
+                    reference.Index[i] = CorrectIndexToSentenceBoundary(
+                        reference.Index[i], contentText);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Maps each story's Sources[].Url into its (legacy) PublicSources string list, so
+    /// older clients that only read PublicSources still see the URLs. Call this on every
+    /// article fetch, alongside PopulateSourceNamesAsync.
+    /// </summary>
+    public static void MapSourceUrlsToPublicSources(IEnumerable<StorySavedModel> stories)
+    {
+        if (stories == null)
+            return;
+
+        foreach (var story in stories)
+        {
+            if (story == null)
+                continue;
+
+            story.PublicSources = story.Sources == null
+                ? new List<string>()
+                : story.Sources
+                    .Where(s => s != null && !string.IsNullOrEmpty(s.Url))
+                    .Select(s => s.Url)
+                    .ToList();
         }
     }
 
