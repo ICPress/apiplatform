@@ -38,6 +38,13 @@ public static class PublicSourceResolver
         }
     }
 
+    /// <summary>
+    /// Corrects/clamps every reference index in storyModel.Sources against the current
+    /// ContentText, without touching SourceId/SourceName or hitting the database. Use this
+    /// on its own (instead of ResolvePublicSourcesAsync) when Sources itself is being carried
+    /// forward unchanged from a previous save — e.g. on update, where the content may have
+    /// shifted but the sources/citations weren't re-submitted by the client.
+    /// </summary>
     public static void RealignReferenceIndexes(StorySavedModel storyModel)
     {
         if (storyModel?.Sources == null || storyModel.Sources.Count == 0)
@@ -221,9 +228,27 @@ public static class PublicSourceResolver
     }
 
     /// <summary>
+    /// True when contentText[position] is a '.' or ',' sitting directly between two digits
+    /// (e.g. the '.' in "5.2bn", the ',' in "5,200") — a numeric separator, not a sentence
+    /// boundary, even though '.' is otherwise treated as one.
+    /// </summary>
+    private static bool IsNumericSeparator(string contentText, int position)
+    {
+        char c = contentText[position];
+        if (c != '.' && c != ',')
+            return false;
+
+        bool leftIsDigit = position > 0 && char.IsDigit(contentText[position - 1]);
+        bool rightIsDigit = position < contentText.Length - 1 && char.IsDigit(contentText[position + 1]);
+        return leftIsDigit && rightIsDigit;
+    }
+
+    /// <summary>
     /// Moves index to just after the nearest '.' or ';' found by scanning both left and
     /// right from index within contentText. Ties go to the left. If no sentence boundary
     /// exists on either side, the index is only clamped to the content bounds.
+    /// A '.' that's actually a numeric separator (e.g. "5.2bn") is skipped — it never
+    /// counts as a sentence boundary, so the scan keeps going past it.
     /// The result is always within [0, contentText.Length].
     /// </summary>
     internal static int CorrectIndexToSentenceBoundary(int index, string contentText)
@@ -237,7 +262,7 @@ public static class PublicSourceResolver
         int leftBoundary = -1;
         for (int p = Math.Min(clamped, len - 1); p >= 0; p--)
         {
-            if (SentenceBoundaryChars.Contains(contentText![p]))
+            if (SentenceBoundaryChars.Contains(contentText![p]) && !IsNumericSeparator(contentText, p))
             {
                 leftBoundary = p;
                 break;
@@ -247,7 +272,7 @@ public static class PublicSourceResolver
         int rightBoundary = -1;
         for (int p = clamped; p < len; p++)
         {
-            if (SentenceBoundaryChars.Contains(contentText![p]))
+            if (SentenceBoundaryChars.Contains(contentText![p]) && !IsNumericSeparator(contentText, p))
             {
                 rightBoundary = p;
                 break;
