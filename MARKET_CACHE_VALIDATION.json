@@ -1,0 +1,48 @@
+{
+  "status": "passed",
+  "scope": "DOM-level checks of shipped JavaScript with HTTP stubs; no native browser, Razor runtime, live API, database or external widgets.",
+  "checks": [
+    "autocomplete with country flags",
+    "keyboard wrap-around and active descendant",
+    "escape closes results",
+    "empty results",
+    "search failure",
+    "result text escapes HTML",
+    "stale requests aborted and hidden",
+    "single-letter ticker search",
+    "search navigates by listing ID",
+    "account badges use API counts",
+    "account menu escape",
+    "prototype ETF list and default chart work without overview API or database",
+    "keyboard focus previews ETF and link opens its gated dashboard",
+    "hover previews ETF without duplicate chart initialization",
+    "explicit instrument TradingView mapping",
+    "chart theme change preserves selected instrument and ETF",
+    "chart script failure shows retry message and retains provider link",
+    "Google choice initializes without automatic sign-in",
+    "Google callback submits credential through antiforgery form",
+    "Google load failure leaves email choice available",
+    "email step does not load Google",
+    "Android attempts existing intent binding once with token-free homepage fallback",
+    "Android handoff can be dismissed on homepage",
+    "blocked automatic app launch keeps a real tap-to-open link",
+    "desktop stays on homepage without app launch"
+  ],
+  "sourceChecks": {
+    "csharpSyntaxFiles": 148,
+    "originalCacheAttributesRestored": true,
+    "originalCssPreserved": true,
+    "all12PrototypeEtfsMatchRoutesAndCatalog": true,
+    "sharedResolverCopiesMatch": true,
+    "noApacheIgnite": true,
+    "previewSanitized": true,
+    "authBodiesPreserved": true,
+    "appsettingsJsonValid": true
+  },
+  "notVerified": [
+    "C#/Razor compilation: CoreCLR previously failed with 0x8007000E in this environment",
+    "Native-browser visual rendering: Chromium could not launch",
+    "Live API and MySQL",
+    "External TradingView rendering, exchange availability and Google/email authentication"
+  ]
+}

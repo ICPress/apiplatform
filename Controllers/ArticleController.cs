@@ -1,8 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Cache.Query;
-using Apache.Ignite.Core.Client.Cache;
-using Apache.Ignite.Core.Cache.Configuration;
 using JWT.Builder;
 using JWT.Algorithms;
 using System.Text.Json;
@@ -32,7 +28,7 @@ public class ArticleController : ControllerBase
         _serverSettings = serverSettings;
     }
     // Explicitly minified — no indentation/newlines — for anything persisted to
-    // MySQL (user_story_log) or serialized before being written to Ignite.
+    // MySQL (user_story_log) or serialized before being written to MySQL.
     private static readonly JsonSerializerOptions CompactJsonOptions = new JsonSerializerOptions
     {
         WriteIndented = false
@@ -240,7 +236,6 @@ public class ArticleController : ControllerBase
         if (count <= 0 || offset < 0)
             return storyArticles;
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using var httpClient = new HttpClient();
         using var connection = new MySqlConnection(
             ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
@@ -250,7 +245,6 @@ public class ArticleController : ControllerBase
         await connection.OpenAsync();
         await connectionStory.OpenAsync();
 
-        var generalCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
 
         // 🔹 FIXED: category in path, not query
         var url = $"{_serverSettings.GorseAPIEndpoint}latest/{category}?n={count}&offset={offset}";
@@ -264,7 +258,7 @@ public class ArticleController : ControllerBase
         {
             if (item?.Id == null) continue;
 
-            var res = await ArticleUtil.TryGetWithFallbackAsync(generalCache, item.Id, connectionStory, _logger);
+            var res = await ArticleUtil.GetAsync(item.Id, connectionStory, _logger);
             if (res == null)
             {
                 _logger.LogError("Missing article {0} from cache and log", item.Id);
@@ -284,16 +278,14 @@ public class ArticleController : ControllerBase
     public async Task<ActionResult<StoryPublishedModel>> GetArticle(string slugTitle)
     {
         var storyArticle = new List<StoryPublishedModel>();
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
         using MySqlConnection connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
 
         await connectionStory.OpenAsync();
         await connection.OpenAsync();
 
-        var generalCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
 
-        var res = await ArticleUtil.TryGetWithFallbackAsync(generalCache, slugTitle, connectionStory, _logger);
+        var res = await ArticleUtil.GetAsync(slugTitle, connectionStory, _logger);
 
         if (res != null)
         {
@@ -336,7 +328,6 @@ public class ArticleController : ControllerBase
         // Get role for pending review hydration — null is fine for non-admin users
         var role = ConfigUtil.VerifyUserNameFromClaimAndGetRole(username, HttpContext.User.Identity as ClaimsIdentity);
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using var httpClient = new HttpClient();
         using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
         using MySqlConnection connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
@@ -344,7 +335,6 @@ public class ArticleController : ControllerBase
         await connectionStory.OpenAsync();
         await connection.OpenAsync();
 
-        var generalCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
 
         // 1. Hydrate pending review articles when review mode is enabled
         if (_serverSettings.RequireArticleReview)
@@ -378,7 +368,7 @@ public class ArticleController : ControllerBase
             var newPendingArticles = new List<StoryPublishedModel>();
             foreach (var pendingSlug in pendingSlugs)
             {
-                StorySavedModel? pendingStory = await ArticleUtil.TryGetWithFallbackAsync(generalCache, pendingSlug.Key, connectionStory, _logger);
+                StorySavedModel? pendingStory = await ArticleUtil.GetAsync(pendingSlug.Key, connectionStory, _logger);
 
                 if (pendingStory == null)
                 {
@@ -463,7 +453,7 @@ public class ArticleController : ControllerBase
         // 3. Hydrate from Cache
         foreach (var recommendation in userArticleIds)
         {
-            var res = await ArticleUtil.TryGetWithFallbackAsync(generalCache, recommendation, connectionStory, _logger);
+            var res = await ArticleUtil.GetAsync(recommendation, connectionStory, _logger);
             if (res == null)
             {
                 _logger.LogError("Did not find article with id: {0}", recommendation);
@@ -496,7 +486,6 @@ public class ArticleController : ControllerBase
         var storyArticles = new List<StoryPublishedModel>();
         if (count <= 0 || offset < 0) return storyArticles;
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using MySqlConnection connectionGorse = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
         using MySqlConnection connectionStory = new MySqlConnection(
             ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
@@ -540,11 +529,10 @@ public class ArticleController : ControllerBase
 
         if (!articleIds.Any()) return storyArticles;
 
-        var cache = ArticleUtil.GetArticleCacheWithTtl(client);
 
         foreach (var id in articleIds)
         {
-            var res = await ArticleUtil.TryGetWithFallbackAsync(cache, id, connectionStory, _logger);
+            var res = await ArticleUtil.GetAsync(id, connectionStory, _logger);
             if (res != null)
             {
                 storyArticles.Add(new StoryPublishedModel(res, false));
@@ -566,7 +554,6 @@ public class ArticleController : ControllerBase
         if (string.IsNullOrWhiteSpace(slugTitle)) return storyArticles;
         if (count <= 0 || offset < 0) return storyArticles;
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using var httpClient = new HttpClient();
         using MySqlConnection connectionGorse = new MySqlConnection(
             ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
@@ -596,10 +583,9 @@ public class ArticleController : ControllerBase
             .Select(r => r.Id!)
             .ToList();
 
-        var cache = ArticleUtil.GetArticleCacheWithTtl(client);
         foreach (var id in articleIds)
         {
-            var res = await ArticleUtil.TryGetWithFallbackAsync(cache, id, connectionStory, _logger);
+            var res = await ArticleUtil.GetAsync(id, connectionStory, _logger);
             if (res != null)
             {
                 storyArticles.Add(new StoryPublishedModel(res, false));
@@ -649,7 +635,6 @@ public class ArticleController : ControllerBase
         var response = new List<UserFollowingInfo>();
         var fetchDate = followingLatestDate;
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
         using MySqlConnection connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
 
@@ -709,13 +694,12 @@ public class ArticleController : ControllerBase
             }
         }
 
-        // 3. Hydrate Stories from Cache
-        var generalCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
+        // 3. Hydrate stories from MySQL
         foreach (UserFollowingInfo userFollowed in response)
         {
             foreach (string storyTitle in userFollowed.StoryTitles)
             {
-                var res = await ArticleUtil.TryGetWithFallbackAsync(generalCache, storyTitle, connectionStory, _logger);
+                var res = await ArticleUtil.GetAsync(storyTitle, connectionStory, _logger);
                 if (res != null)
                 {
                     userFollowed.NewStories.Add(new StoryPublishedModel(res, false));
@@ -747,7 +731,6 @@ public class ArticleController : ControllerBase
         if (role == null) return storyArticles;
         if (count <= 0 || offset < 0 || count >= byte.MaxValue) return storyArticles;
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using var httpClient = new HttpClient();
         using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
         using MySqlConnection connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
@@ -766,10 +749,9 @@ public class ArticleController : ControllerBase
         int limit = Math.Max(Math.Min(count, userArticleIds.Count - offset), 0);
         userArticleIds = userArticleIds.GetRange(offset, limit);
 
-        var generalCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
         foreach (var feedback in userArticleIds)
         {
-            var res = await ArticleUtil.TryGetWithFallbackAsync(generalCache, feedback.ItemId, connectionStory, _logger);
+            var res = await ArticleUtil.GetAsync(feedback.ItemId, connectionStory, _logger);
             if (res == null)
             {
                 continue;
@@ -791,8 +773,6 @@ public class ArticleController : ControllerBase
         var storyArticles = new List<StoryPublishedModel>();
         var userArticleIds = new List<string>();
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
-        var generalCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
 
         using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.GORSE, _serverSettings));
         using MySqlConnection connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
@@ -832,7 +812,7 @@ public class ArticleController : ControllerBase
             var newPendingArticles = new List<StoryPublishedModel>();
             foreach (var pendingSlug in pendingSlugs)
             {
-                StorySavedModel? pendingStory = await ArticleUtil.TryGetWithFallbackAsync(generalCache, pendingSlug.Key, connectionStory, _logger);
+                StorySavedModel? pendingStory = await ArticleUtil.GetAsync(pendingSlug.Key, connectionStory, _logger);
 
                 if (pendingStory == null)
                 {
@@ -875,7 +855,7 @@ public class ArticleController : ControllerBase
         {
             if (!string.IsNullOrEmpty(storyTitle))
             {
-                var res = await ArticleUtil.TryGetWithFallbackAsync(generalCache, storyTitle, connectionStory, _logger);
+                var res = await ArticleUtil.GetAsync(storyTitle, connectionStory, _logger);
                 if (res != null)
                     storyArticles.Add(new StoryPublishedModel(res, role == ConfigUtil.JWT_ADMIN_ROLE || res.AuthorName == loggedInUsername));
             }
@@ -923,7 +903,6 @@ public class ArticleController : ControllerBase
 
         MySqlTransaction? myTrans = null;
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         await using var connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(
             ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
         await connectionStory.OpenAsync();
@@ -944,7 +923,6 @@ public class ArticleController : ControllerBase
         config.AllowedChars.Remove('_');
         SlugHelper helper = new SlugHelper(config);
 
-        var aCache = ArticleUtil.GetArticleCacheWithTtl(client);
 
         if (storyModel == null || storyModel.AuthorName == null)
             throw new ArgumentNullException("storyModel", "Article cannot be empty");
@@ -960,7 +938,7 @@ public class ArticleController : ControllerBase
         await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
         try
         {
-            // Always check DB first, regardless of cache state
+            // The unique user_stories key arbitrates concurrent publishing.
             var mySqlCommandCheckExistingPost = new MySql.Data.MySqlClient.MySqlCommand();
             mySqlCommandCheckExistingPost.CommandText = @"
                 SELECT s.slug_title, s.username,
@@ -1005,8 +983,6 @@ public class ArticleController : ControllerBase
                 _logger.LogDebug("Slug collision — new URL title: {0}", storyModel.SlugTitle);
             }
 
-            if (!await aCache.WithKeepBinary<string, StorySavedModel>().PutIfAbsentAsync(storyModel.SlugTitle, storyModel))
-                throw new ArgumentNullException("storyModel.StoryTitle", "Article title is taken");
            
             _logger.LogDebug("Story URL-title resolved to {0}", storyModel.SlugTitle);
 
@@ -1022,7 +998,7 @@ public class ArticleController : ControllerBase
             if (await mySqlCommandInsert.ExecuteNonQueryAsync() <= 0)
                 throw new Exception("Could not insert story record!");
 
-            // Snapshot the published story so it can be recovered after cache expiry
+            // Store the authoritative published snapshot
             var mySqlCommandLog = new MySql.Data.MySqlClient.MySqlCommand();
             mySqlCommandLog.Transaction = myTrans;
             mySqlCommandLog.CommandText =
@@ -1069,13 +1045,9 @@ public class ArticleController : ControllerBase
             {
                 _logger.LogError("Exception publishing {0}: {1} — rolling back", storyModel.SlugTitle, ex.Message);
 
-                if (!_serverSettings.RequireArticleReview || role == ConfigUtil.JWT_ADMIN_ROLE)
-                    await httpClient.DeleteAsync(_serverSettings.GorseAPIEndpoint + "item/" + storyModel.SlugTitle);
-
                 if (myTrans != null)
                     await myTrans.RollbackAsync();
 
-                await aCache.WithKeepBinary<string, StorySavedModel>().RemoveAsync(storyModel.SlugTitle);
             }
             catch (MySqlException ex2)
             {
@@ -1117,7 +1089,6 @@ public class ArticleController : ControllerBase
         ArticleUtil.SanitizeStylingInfo(storyModel.StylingInfo, storyModel.ContentText?.Length ?? 1);
         storyModel.Updated = DateTime.UtcNow;
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         await using var connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(
             ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
         await connectionStory.OpenAsync();
@@ -1126,7 +1097,6 @@ public class ArticleController : ControllerBase
         await PublicSourceResolver.ResolvePublicSourcesAsync(connectionStory, storyModel);
         _logger.LogDebug("Update request for user {0}, story {1}", storyModel.AuthorName, storyModel.StoryTitle);
 
-        var aCache = ArticleUtil.GetArticleCacheWithTtl(client);
 
         if (storyModel == null || storyModel.AuthorName == null)
             throw new ArgumentNullException("storyModel", "Article cannot be empty");
@@ -1144,8 +1114,8 @@ public class ArticleController : ControllerBase
             if ((long)(await mySqlCommand.ExecuteScalarAsync()) == 0L)
                 return StatusCode(404);
 
-            // Cache-miss fallback: hydrate from user_story_log before comparing authors
-            StorySavedModel? oldStory = await ArticleUtil.TryGetWithFallbackAsync(aCache, slugTitle, connectionStory, _logger);
+            // Hydrate from user_story_log before comparing authors
+            StorySavedModel? oldStory = await ArticleUtil.GetAsync(slugTitle, connectionStory, _logger);
             if (oldStory == null || oldStory.AuthorName?.Equals(storyModel.AuthorName) != true)
             {
                 _logger.LogError("Story {0} not found or author mismatch", slugTitle);
@@ -1156,12 +1126,13 @@ public class ArticleController : ControllerBase
             storyModel.LangCode = oldStory.LangCode; //keep language classification
             storyModel.SlugTitle = slugTitle;
             storyModel.Timestamp = oldStory.Timestamp;
+            storyModel.IsReviewed = oldStory.IsReviewed;
             storyModel.Tags = oldStory.Tags;
 
             storyModel.Sources = oldStory.Sources;
             PublicSourceResolver.RealignReferenceIndexes(storyModel);
 
-            // Log old version before overwriting — include titles for searchability
+            // Append the new authoritative snapshot — include titles for searchability
             var mySqlCommandInsert = new MySql.Data.MySqlClient.MySqlCommand();
             mySqlCommandInsert.CommandText =
                 "INSERT INTO user_story_log (slug_title, story_title, empty_title, story_compressed) " +
@@ -1175,13 +1146,6 @@ public class ArticleController : ControllerBase
             if (await mySqlCommandInsert.ExecuteNonQueryAsync() <= 0)
                 return StatusCode(500);
 
-
-            _logger.LogDebug("Updating story {0} in Ignite", slugTitle);
-
-            if (!await aCache.ReplaceAsync(slugTitle, storyModel))
-            {
-                _logger.LogInformation("Story {0} missing in Ignite during update", slugTitle);
-            }
 
             // When review is required, clear the rejection reason so the article
             // goes back to the pending queue for re-review after the author's edit

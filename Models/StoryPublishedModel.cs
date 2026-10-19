@@ -2,6 +2,9 @@ using System.Text.Json.Serialization;
 
 public class StoryPublishedModel : StorySavedModel, IAuthorEntityPublished
 {
+    [JsonPropertyName("authorFullName")]
+    public string? AuthorFullName { get; set; }
+
     public StoryPublishedModel() { }
 
     public StoryPublishedModel(StorySavedModel savedModel, bool isAdmin)

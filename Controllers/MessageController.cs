@@ -1,8 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Cache.Query;
-using Apache.Ignite.Core.Client.Cache;
-using Apache.Ignite.Core.Cache.Configuration;
 using JWT.Builder;
 using JWT.Algorithms;
 using System.Text.Json;
@@ -60,7 +56,7 @@ public class MessageController : ControllerBase
                 {
                     while (await reader.ReadAsync())
                     {
-                        uint messageId = reader.GetUInt32("message_id");
+                        uint messageId = (uint)reader.GetInt64("message_id");
                         string messageUUID = reader.GetString("message_uuid");
                         string targetUsername = reader.GetString("target_username");
                         string messageUsername = reader.GetString("username");

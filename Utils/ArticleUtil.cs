@@ -1,15 +1,9 @@
-using Apache.Ignite.Core;
 using MySql.Data.MySqlClient;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using Apache.Ignite.Core.Cache.Query;
-using Apache.Ignite.Core.Client.Cache;
-using Apache.Ignite.Core.Cache.Configuration;
-using Apache.Ignite.Core.Client;
-using Apache.Ignite.Core.Cache.Expiry;
 
 public static class ArticleUtil
 {
@@ -80,43 +74,13 @@ public static class ArticleUtil
 
         await GeneralUtil.PreloadBadgeDataAsync(connectionStory, storyArticles);
     }
-    // ---------------------------------------------------------------------------
-    // Cache helpers
-    // ---------------------------------------------------------------------------
-
-    /// <summary>
-    /// Returns the storyarticle cache configured with a 14-day create/update expiry.
-    /// Access TTL is intentionally left null so reads do not reset the clock.
-    /// </summary>
-    public static ICacheClient<string, StorySavedModel> GetArticleCacheWithTtl(IIgniteClient client)
+    // MySQL is the authoritative source; a removed story cannot be revived from its log.
+    public static async Task<StorySavedModel?> GetAsync(
+        string slugTitle, MySqlConnection connection, ILogger logger)
     {
-        return client.GetOrCreateCache<string, StorySavedModel>("storyarticle")
-        .WithExpiryPolicy(
-            new ExpiryPolicy(
-                create: TimeSpan.FromDays(14),
-                update: TimeSpan.FromDays(14),
-                access: null)
-        );
-    }
-
-    /// <summary>
-    /// Attempts a cache get; on miss, fetches the latest published snapshot from
-    /// user_story_log, deserialises it.  Returns null when the story cannot be found anywhere.
-    /// </summary>
-    public static async Task<StorySavedModel?> TryGetWithFallbackAsync(
-        ICacheClient<string, StorySavedModel> cache,
-        string slugTitle,
-        MySqlConnection connection, ILogger logger)
-    {
-        var result = await cache.TryGetAsync(slugTitle);
-        if (result.Success)
-            return result.Value;
-
-        logger.LogDebug("Cache miss for '{0}' — querying user_story_log", slugTitle);
-
-        var cmd = new MySql.Data.MySqlClient.MySqlCommand(
+        using var cmd = new MySql.Data.MySqlClient.MySqlCommand(
             "SELECT CAST(UNCOMPRESS(story_compressed) AS CHAR) FROM user_story_log " +
-            "WHERE slug_title = @slug " + 
+            "WHERE slug_title = @slug AND EXISTS (SELECT 1 FROM user_stories s WHERE s.slug_title = @slug) " + 
             "ORDER BY log_id DESC LIMIT 1",
             connection);
         cmd.Parameters.AddWithValue("@slug", slugTitle);
@@ -126,7 +90,7 @@ public static class ArticleUtil
         catch (Exception ex)
         {
             logger.LogError("DB error fetching log row for '{0}': {1}", slugTitle, ex.Message);
-            return null;
+            throw;
         }
 
         if (raw == null || raw == DBNull.Value)

@@ -1,8 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Cache.Query;
-using Apache.Ignite.Core.Client.Cache;
-using Apache.Ignite.Core.Cache.Configuration;
 using JWT.Builder;
 using JWT.Algorithms;
 using System.Text.Json;
@@ -66,10 +62,10 @@ public class NotificationController : ControllerBase
                 while (await reader.ReadAsync())
                 {
 
-                    uint notificationId = reader.GetUInt32("notification_id");
+                    uint notificationId = (uint)reader.GetInt64("notification_id");
                     ushort type = reader.GetUInt16("type");
                     string additionalData = reader.GetString("additional_data");
-                    uint transactionDescriptionType = reader.GetUInt32("transaction_description_type");
+                    uint transactionDescriptionType = (uint)reader.GetInt64("transaction_description_type");
                     bool notificationRead = reader.GetBoolean("notification_read");
                     string availableFrom = reader.GetString("available_from");
                     var notification = new NotificationModel(notificationId, type, additionalData, transactionDescriptionType, availableFrom, notificationRead);
@@ -115,15 +111,13 @@ public class NotificationController : ControllerBase
             }
             if (userLikeNotifications.Union(userArticleNotifications).Any())
             {
-                using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
-                var generalCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
                 foreach (var likeNotification in userLikeNotifications.Union(userArticleNotifications))
                 {
                     var indexSlugTitleSeparator = likeNotification.AdditionalData.IndexOf(":");
                     if (indexSlugTitleSeparator < 0) continue;
                     var slugTitle = likeNotification.AdditionalData.Substring(0, indexSlugTitleSeparator);
 
-                    StorySavedModel? storyModel = await ArticleUtil.TryGetWithFallbackAsync(generalCache, slugTitle, connectionStory, _logger);
+                    StorySavedModel? storyModel = await ArticleUtil.GetAsync(slugTitle, connectionStory, _logger);
 
                     if (storyModel != null)
                     {
@@ -203,7 +197,7 @@ public class NotificationController : ControllerBase
                 while (await readerMessage.ReadAsync())
                 {
                     string targetUsername = readerMessage.GetString("target_username");
-                    uint messageId = readerMessage.GetUInt32("message_id");
+                    uint messageId = (uint)readerMessage.GetInt64("message_id");
                     string messageUuid = readerMessage.GetString("message_uuid");
                     string authorUsername = readerMessage.GetString("username");
                     bool deleted = readerMessage.GetBoolean("deleted");

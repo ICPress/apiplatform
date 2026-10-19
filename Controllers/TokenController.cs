@@ -1,8 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Cache.Query;
-using Apache.Ignite.Core.Client.Cache;
-using Apache.Ignite.Core.Cache.Configuration;
 using JWT.Builder;
 using JWT.Algorithms;
 using System.Text.Json;
@@ -68,32 +64,9 @@ public class TokenController : ControllerBase
     [HttpGet("{appName}")]
     public async Task<string> GetToken(string appName)
     {
-        // return GetEncryptedString("randomText");
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using var httpClient = new HttpClient();
-        var generalCache = client.GetOrCreateCache<string, AuthCacheData>("generalCache");
-        if (generalCache.ContainsKey(GeneralCacheKey.S3_AUTH_TOKEN))
-        {
-            var token = generalCache.Get(GeneralCacheKey.S3_AUTH_TOKEN);
-            if (token.Expiration.AddHours(-1) <= DateTime.UtcNow)
-            { //about to expire
-                var newTokenTask = await GeneralUtil.StartGetNewTokenTask(httpClient, generalCache, token.AuthToken, _serverSettings, _logger);
-                _logger.LogError("Fetched new token, received:" + newTokenTask);
-                return GetEncryptedString(newTokenTask, _serverSettings.CDNAccessKey);
-            }
-            else
-            {
-                _logger.LogError("Reusing existing token in memory:" + token.AuthToken);
-                return GetEncryptedString(token.AuthToken, _serverSettings.CDNAccessKey);
-            }
-        }
-        else
-        {
-            var newTokenTask = await GeneralUtil.StartGetNewTokenTask(httpClient, generalCache, "", _serverSettings, _logger);
-            _logger.LogError("no memory exists, fetching new token, received:" + newTokenTask);
-            return GetEncryptedString(newTokenTask, _serverSettings.CDNAccessKey);
-        }
+        var token = await GeneralUtil.StartGetNewTokenTask(httpClient, "", _serverSettings, _logger);
+        if (string.IsNullOrEmpty(token)) throw new InvalidOperationException("Storage authentication failed.");
+        return GetEncryptedString(token, _serverSettings.CDNAccessKey);
     }
-
-
 }

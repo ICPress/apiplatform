@@ -2,12 +2,18 @@ using Microsoft.Extensions.Options;
 
 public class ServerSettings
 {
+    public List<MarketOverviewEntry> MarketOverview { get; set; } = new();
+    // Keys: COUNTRY|EXCHANGE and COUNTRY|EXCHANGE|SYMBOL, respectively.
+    public Dictionary<string, string> TradingViewExchanges { get; set; } = new();
+    public Dictionary<string, string> TradingViewSymbolOverrides { get; set; } = new();
+
+    public string GoogleClientId { get; set; } = "";
+
     public string MysqlConnectionGorse { get; set; } = "";
     public string MysqlConnectionStoryPop { get; set; } = "";
 
     public string JWTSecret { get; set; } = "";
 
-    public string IgniteEndpoint { get; set; } = "";
     public string SpacyEndpoint { get; set; } = "";
 
     public string GorseAPIEndpoint { get; set; } = "";

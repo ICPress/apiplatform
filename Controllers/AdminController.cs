@@ -1,8 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Cache.Query;
-using Apache.Ignite.Core.Client.Cache;
-using Apache.Ignite.Core.Cache.Configuration;
 using JWT.Builder;
 using JWT.Algorithms;
 using System.Text.Json;
@@ -102,28 +98,16 @@ public class AdminController : ControllerBase
             return StatusCode(401);
         }
 
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
         using var httpClient = new HttpClient();
         await using var connectionStory = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(
             ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
         await connectionStory.OpenAsync();
 
-        // Verify the article exists in cache (fall back to DB if cache has expired)
-        var aCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
-        StorySavedModel? storyModel = null;
-        if (aCache.TryGet(slugTitle, out StorySavedModel cachedModel))
-        {
-            storyModel = cachedModel;
-        }
-        else
-        {
-            var fallback = await ArticleUtil.TryGetWithFallbackAsync(aCache, slugTitle, connectionStory, _logger);
-            storyModel = fallback;
-        }
+        var storyModel = await ArticleUtil.GetAsync(slugTitle, connectionStory, _logger);
 
         if (storyModel == null)
         {
-            _logger.LogError("ReviewAccepted: article {0} not found in cache or log", slugTitle);
+            _logger.LogError("ReviewAccepted: article {0} not found in database", slugTitle);
             return StatusCode(404);
         }
 
@@ -141,15 +125,24 @@ public class AdminController : ControllerBase
 
         try
         {
-            // Remove from pending review
-            var deleteCmd = new MySql.Data.MySqlClient.MySqlCommand();
-            deleteCmd.CommandText = "DELETE FROM article_pending_review WHERE slug_title = @slug_title";
-            deleteCmd.Connection = connectionStory;
+            using var transaction = await connectionStory.BeginTransactionAsync();
+            using var deleteCmd = new MySqlCommand("DELETE FROM article_pending_review WHERE slug_title = @slug_title", connectionStory, transaction);
             deleteCmd.Parameters.AddWithValue("@slug_title", slugTitle);
-            await deleteCmd.ExecuteNonQueryAsync();
-
-            // Queue publish event and update tag ranks
-            await ArticleUtil.QueuePublishEventAsync(connectionStory, storyModel, _logger);
+            if (await deleteCmd.ExecuteNonQueryAsync() == 0) return StatusCode(404);
+            storyModel.IsReviewed = true;
+            using var snapshot = new MySqlCommand(@"INSERT INTO user_story_log (slug_title, story_title, empty_title, story_compressed)
+                VALUES (@slug, @title, @emptyTitle, COMPRESS(@story))", connectionStory, transaction);
+            snapshot.Parameters.AddWithValue("@slug", slugTitle);
+            snapshot.Parameters.AddWithValue("@title", storyModel.StoryTitle ?? "");
+            snapshot.Parameters.AddWithValue("@emptyTitle", storyModel.EmptyTitle ?? "");
+            snapshot.Parameters.AddWithValue("@story", JsonSerializer.Serialize(storyModel));
+            await snapshot.ExecuteNonQueryAsync();
+            using var publish = new MySqlCommand("INSERT INTO events_queued (trigger_source_username, additional_data, type) VALUES (@username, @slug, @type)", connectionStory, transaction);
+            publish.Parameters.AddWithValue("@username", storyModel.AuthorName);
+            publish.Parameters.AddWithValue("@slug", slugTitle);
+            publish.Parameters.AddWithValue("@type", (int)EventTriggerType.PUBLISHED_ARTICLE);
+            await publish.ExecuteNonQueryAsync();
+            await transaction.CommitAsync();
 
             _logger.LogDebug("ReviewAccepted: article {0} published to Gorse", slugTitle);
             return StatusCode(200);

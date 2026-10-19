@@ -2,8 +2,6 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Client.Cache;
 using MySql.Data.MySqlClient;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Math;
@@ -18,7 +16,7 @@ public static class GeneralUtil
 
         var mySqlCommandBadge = new MySql.Data.MySqlClient.MySqlCommand();
         mySqlCommandBadge.Connection = connectionStory;
-        mySqlCommandBadge.CommandText = $"SELECT username, profile_icon FROM users WHERE username IN ({string.Join(",", distinctAuthors.Select(_ => "?"))})";
+        mySqlCommandBadge.CommandText = $"SELECT username, profile_icon, full_name FROM users WHERE username IN ({string.Join(",", distinctAuthors.Select(_ => "?"))})";
 
         foreach (var name in distinctAuthors)
         {
@@ -38,11 +36,12 @@ public static class GeneralUtil
                 ? null
                 : reader.GetString(iconOrdinal);
 
-            if (authorBadgeMetadata == null) continue;
+            var fullName = reader.IsDBNull(reader.GetOrdinal("full_name")) ? null : reader.GetString(reader.GetOrdinal("full_name"));
 
             foreach (var authorItem in authorItems.Where(x => x.AuthorName == username))
             {
                 authorItem.AuthorBadge = authorBadgeMetadata;
+                if (authorItem is StoryPublishedModel story) story.AuthorFullName = fullName;
             }
         }
     }
@@ -76,7 +75,7 @@ public static class GeneralUtil
     }
 
 
-    public static async Task<string> StartGetNewTokenTask(HttpClient httpClient, Apache.Ignite.Core.Client.Cache.ICacheClient<string, AuthCacheData> generalCache, string oldToken, ServerSettings serverSettings, ILogger logger)
+    public static async Task<string> StartGetNewTokenTask(HttpClient httpClient, string oldToken, ServerSettings serverSettings, ILogger logger)
     {
         try
         {
@@ -114,7 +113,6 @@ public static class GeneralUtil
                     authTokenNew.Expiration = DateTime.UtcNow.AddHours(24);
                 }
                 authTokenNew.Issued = DateTime.UtcNow;
-                generalCache.Put(GeneralCacheKey.S3_AUTH_TOKEN, authTokenNew);
                 return authTokenNew.AuthToken;
             }
             if (res.Headers.Contains("X-Subject-Token"))
@@ -126,7 +124,6 @@ public static class GeneralUtil
                     authTokenNew.AuthToken = res.Headers.GetValues("X-Subject-Token").First();
                     authTokenNew.Expiration = newToken.Token.ExpiresAt;
                     authTokenNew.Issued = newToken.Token.IssuedAt;
-                    generalCache.Put(GeneralCacheKey.S3_AUTH_TOKEN, authTokenNew);
                     return authTokenNew.AuthToken;
                 }
                 else logger.LogError("swift auth object not deserialized!");
@@ -146,34 +143,8 @@ public static class GeneralUtil
     {
 
         using HttpClient httpClient = new HttpClient();
-        ICacheClient<string, AuthCacheData> generalCache;
-        try
-        {
-            using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(serverSettings!));
-            var cluster = client.GetCluster();
-            if (!cluster.IsActive())
-            {
-                client.GetCluster().SetActive(true); // activate ignite cluster if not active
-            }
-            generalCache = client.GetOrCreateCache<string, AuthCacheData>("generalCache");
-            try
-            {
-                await CheckCreateSwiftBuckets(httpClient, serverSettings, generalCache, buckets, logger);
-            }
-            catch (Exception ex)
-            {
-                logger.LogError($"Checking & creating swift buckets failed: {ex.Message}", ex);
-            }
-        }
-        catch (Exception igniteException)
-        {
-            logger.LogError($"Connecting to Ignite failed: {igniteException.Message}", igniteException);
-            throw;
-        }
-
+        await CheckCreateSwiftBuckets(httpClient, serverSettings, buckets, logger);
     }
-
-
 
     public static async Task<bool> SetContainerPublicReadAsync(HttpClient client, string containerUri, string authToken)
     {
@@ -190,9 +161,9 @@ public static class GeneralUtil
     }
 
 
-    public static async Task CheckCreateSwiftBuckets(HttpClient httpClient, ServerSettings serverSettings, ICacheClient<string, AuthCacheData> igniteCache, List<string> buckets, ILogger logger)
+    public static async Task CheckCreateSwiftBuckets(HttpClient httpClient, ServerSettings serverSettings, List<string> buckets, ILogger logger)
     {
-        var token = await GeneralUtil.StartGetNewTokenTask(httpClient, igniteCache, "", serverSettings!, logger);
+        var token = await GeneralUtil.StartGetNewTokenTask(httpClient, "", serverSettings!, logger);
         httpClient.DefaultRequestHeaders.Add("X-Auth-Token", token);
         foreach (string bucket in buckets)
         {

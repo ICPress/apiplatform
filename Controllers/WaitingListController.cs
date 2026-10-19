@@ -1,7 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core.Cache.Expiry;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Client;
 using JWT.Builder;
 using JWT.Algorithms;
 using JWT.Exceptions;

@@ -1,4 +1,3 @@
-using Apache.Ignite.Core;
 using apiplatform.Controllers;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.VisualBasic;
@@ -66,6 +65,7 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
 });
 
+app.UseRouting();
 app.UseCors("AllowStoryPopCORS");
 
 app.UseAuthentication();

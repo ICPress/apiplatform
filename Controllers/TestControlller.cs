@@ -1,8 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Cache.Query;
-using Apache.Ignite.Core.Client.Cache;
-using Apache.Ignite.Core.Cache.Configuration;
 using JWT.Builder;
 using JWT.Algorithms;
 using System.Text.Json;
@@ -35,16 +31,11 @@ public class TestController : ControllerBase
     }
 
     [HttpGet]
-    public Version GetClusterStatus()
+    public async Task<IActionResult> GetDatabaseStatus()
     {
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
-        var cluster = client.GetCluster();
-        if (!cluster.IsActive())
-        {
-            client.GetCluster().SetActive(true);
-            return new Version(false);
-        }
-        else return new Version(true);
-
+        using var connection = new MySqlConnection(_serverSettings.MysqlConnectionStoryPop);
+        await connection.OpenAsync();
+        using var command = new MySqlCommand("SELECT 1", connection);
+        return Ok(new { versionCode = 2, databaseRunning = Convert.ToInt32(await command.ExecuteScalarAsync()) == 1 });
     }
 }

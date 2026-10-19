@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-17",
+  "checksPassed": 51,
+  "reports": {
+    "dom-results.json": {
+      "status": "passed",
+      "scope": "DOM-level checks of shipped JavaScript with HTTP stubs; no native browser, Razor runtime, live API, database or external widgets.",
+      "checks": [
+        "autocomplete with country flags",
+        "keyboard wrap-around and active descendant",
+        "escape closes results",
+        "empty results",
+        "search failure",
+        "result text escapes HTML",
+        "stale requests aborted and hidden",
+        "single-letter ticker search",
+        "search navigates by listing ID",
+        "account badges use API counts",
+        "account menu escape",
+        "prototype ETF list and default chart work without overview API or database",
+        "hover, focus and scrolling do not switch chart",
+        "ETF button selects chart without navigation and updates accessible selection",
+        "selecting same ETF does not reload widget",
+        "explicit instrument TradingView mapping",
+        "chart theme change preserves selected instrument and ETF",
+        "chart failure displays a message without extra provider link",
+        "Google choice initializes without automatic sign-in",
+        "Google callback submits credential through antiforgery form",
+        "Google load failure leaves email choice available",
+        "email step does not load Google",
+        "Android attempts existing intent binding once with token-free homepage fallback",
+        "Android handoff can be dismissed on homepage",
+        "blocked automatic app launch keeps a real tap-to-open link",
+        "desktop stays on homepage without app launch"
+      ]
+    },
+    "community-dom-results.json": {
+      "status": "passed",
+      "scope": "DOM-level script checks with stubbed network, canvas and viewport; not native visual or server integration tests.",
+      "checks": [
+        "read state stays untouched before items enter the viewport",
+        "only visible eligible IDs are posted with antiforgery token and counts refreshed",
+        "failed read update retains unread status and offers retry",
+        "read update retry succeeds without losing pending IDs",
+        "email landing auto-submits the proof once and removes it from browser URL",
+        "mobile visitor menu closes on Escape and updates expanded state"
+      ]
+    },
+    "image-limits-results.json": {
+      "status": "passed",
+      "scope": "JavaScript DOM/canvas/network stubs and route source contracts; not live Swift or compiled ASP.NET route tests.",
+      "checks": [
+        "avatar 3000\u00d72000: large 1024\u00d71024, preview 576\u00d7576",
+        "avatar 700\u00d7700: large 700\u00d7700, preview 576\u00d7576",
+        "avatar 576\u00d7576: large 576\u00d7576, no preview or upscaling",
+        "avatar 577\u00d7577: large 577\u00d7577, preview 576\u00d7576",
+        "avatar 200\u00d7100: large 100\u00d7100, no preview or upscaling",
+        "avatar 2000\u00d73000: large 1024\u00d71024, preview 576\u00d7576",
+        "cover 3000\u00d72000: large 1024\u00d7320, preview 576\u00d7180",
+        "cover 500\u00d7300: large 500\u00d7156, no preview or upscaling",
+        "cover 600\u00d71200: large 600\u00d7188, preview 576\u00d7180",
+        "cover 1600\u00d7500: large 1024\u00d7320, preview 576\u00d7180",
+        "circle-focused crop follows zoom, keyboard and pointer movement before downsampling",
+        "large PUT failure prevents metadata commit; retry uploads both with a fresh receipt",
+        "small PUT failure prevents metadata commit; retry uploads both with a fresh receipt",
+        "registration receives a receipt only after both uploads, then submits it with account creation",
+        "registration can continue without a photo after upload failure or removal",
+        "route failure stops before Swift PUT and shows actionable status",
+        "session failure stops before Swift PUT and shows actionable status",
+        "unsupported file and canceled crop never fetch credentials or upload",
+        "view uses named prepare/complete attribute routes; upstream missing API is distinct from website 404"
+      ]
+    }
+  },
+  "sourceChecks": {
+    "CSharpFilesParsed": 120,
+    "CSharpSyntaxErrors": 0,
+    "GetUInt32Usages": 0,
+    "originalStylesheetUnchanged": true,
+    "existingResponseCacheAttributesUnchanged": true,
+    "previewInertAndWithoutNumericText": true
+  },
+  "limits": [
+    "C# and Razor not compiled: .NET runtime startup was blocked in this workspace.",
+    "ASP.NET route behavior checked at source level only, not against a running deployment.",
+    "Canvas, dialog and HTTP are stubbed in DOM tests; native-browser visual rendering and live Swift/MySQL remain unverified."
+  ]
+}

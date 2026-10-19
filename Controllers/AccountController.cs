@@ -1,7 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using Apache.Ignite.Core.Cache.Expiry;
-using Apache.Ignite.Core;
-using Apache.Ignite.Core.Client;
 using JWT.Builder;
 using JWT.Algorithms;
 using JWT.Exceptions;
@@ -49,141 +46,70 @@ public class AccountController : ControllerBase
     }
 
     [HttpPost("getSignInLink/{email}")]
-    public StatusCodeResult GetSigninLink(string email)
+    public async Task<IActionResult> GetSigninLink(string email)
     {
-        using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
-        try
-        {
-            connection.Open();
-            var mySqlCommandCheck = new MySql.Data.MySqlClient.MySqlCommand();
-            mySqlCommandCheck.CommandText = "SELECT username from users WHERE email = @email";
-            mySqlCommandCheck.Connection = connection;
-            mySqlCommandCheck.Parameters.AddWithValue("@email", email);
-            var username = mySqlCommandCheck.ExecuteScalar()?.ToString();
-            if (username == null)
-            {
-                return StatusCode(400);
-            }
-            var mySqlCommandCheck2 = new MySql.Data.MySqlClient.MySqlCommand();
-            mySqlCommandCheck2.CommandText = "SELECT COUNT(*) from sent_links_users WHERE username = @username and created_at > @checkdate";
-            mySqlCommandCheck2.Connection = connection;
-            mySqlCommandCheck2.Parameters.AddWithValue("@username", username);
-            mySqlCommandCheck2.Parameters.AddWithValue("@checkdate", DateTime.UtcNow.AddMinutes(-ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES));
-            if ((long)mySqlCommandCheck2.ExecuteScalar() != 0)
-            {
-                return StatusCode(403);
-            }
-            var generalCache = client.GetOrCreateCache<string, string>(ConfigUtil.TEMP_TOKEN_STORE_IGNITE)
-    .WithExpiryPolicy(new ExpiryPolicy(TimeSpan.FromMinutes(ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES), null, null));
-            var tempToken = ConfigUtil.GetNewToken(_serverSettings, ConfigUtil.TEMP_TOKEN_PREFIX + username, DateTime.Now.AddMinutes(ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES));
-            generalCache.Put(username, tempToken);
-            Console.WriteLine("Created tmpToken:" + tempToken);
-            var mySqlCommandInsertEmail = new MySql.Data.MySqlClient.MySqlCommand();
-            mySqlCommandInsertEmail.CommandText = "INSERT INTO mail_queue (email, type, additional_data) VALUES (@email, @type, @additional_data)";
-            mySqlCommandInsertEmail.Connection = connection;
-            mySqlCommandInsertEmail.Parameters.AddWithValue("@email", email);
-            mySqlCommandInsertEmail.Parameters.AddWithValue("@type", (int)EmailType.RECOVER_SIGN_ON);
-            mySqlCommandInsertEmail.Parameters.AddWithValue("@additional_data", tempToken);
-            mySqlCommandInsertEmail.ExecuteNonQuery();
-            var mySqlCommandInsert = new MySql.Data.MySqlClient.MySqlCommand();
-            mySqlCommandInsert.CommandText = "INSERT INTO sent_links_users (username, ip_address) VALUES (@username,INET6_ATON(@ip_address))";
-            mySqlCommandInsert.Connection = connection;
-            mySqlCommandInsert.Parameters.AddWithValue("@username", username);
-            mySqlCommandInsert.Parameters.AddWithValue("@ip_address", Request.HttpContext.Connection.RemoteIpAddress?.ToString());
-            if (mySqlCommandInsert.ExecuteNonQuery() > 0)
-            {
-                return StatusCode(201);
-            }
-        }
-        finally
-        {
-            connection.Close();
-        }
+        if (!System.Net.Mail.MailAddress.TryCreate(email, out _) || email.Length > 255) return BadRequest();
+        using var connection = new MySqlConnection(_serverSettings.MysqlConnectionStoryPop);
+        await connection.OpenAsync();
+        using var transaction = await connection.BeginTransactionAsync();
+        // Serialize link issuance for an account across API instances.
+        using var userCommand = new MySqlCommand("SELECT username FROM users WHERE email = @email FOR UPDATE", connection, transaction);
+        userCommand.Parameters.AddWithValue("@email", email.Trim());
+        var username = (string?)await userCommand.ExecuteScalarAsync();
+        if (username == null) return StatusCode(201); // Avoid email enumeration.
+        using var recent = new MySqlCommand("SELECT COUNT(*) FROM sent_links_users WHERE username = @username AND email = @email AND verified_at IS NULL AND expires_at > UTC_TIMESTAMP() AND created_at > UTC_TIMESTAMP() - INTERVAL 30 MINUTE", connection, transaction);
+        recent.Parameters.AddWithValue("@username", username);
+        recent.Parameters.AddWithValue("@email", email.Trim());
+        if (Convert.ToInt64(await recent.ExecuteScalarAsync()) > 0) return StatusCode(201);
+        var token = ConfigUtil.GetNewToken(_serverSettings, ConfigUtil.TEMP_TOKEN_PREFIX + username,
+            DateTime.UtcNow.AddMinutes(ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES), ConfigUtil.JWT_DEFAULT_ROLE);
+        await EmailTokenStore.InsertAsync(connection, transaction, username, token, HttpContext.Connection.RemoteIpAddress?.ToString());
+        using var mail = new MySqlCommand("INSERT INTO mail_queue (email, type, additional_data) VALUES (@email, @type, @token)", connection, transaction);
+        mail.Parameters.AddWithValue("@email", email.Trim());
+        mail.Parameters.AddWithValue("@type", (int)EmailType.RECOVER_SIGN_ON);
+        mail.Parameters.AddWithValue("@token", token);
+        await mail.ExecuteNonQueryAsync();
+        await transaction.CommitAsync();
         return StatusCode(201);
     }
 
     [HttpPost("verify/{authToken}")]
-    public string? VerifyEmail(string authToken) //TODO: call from within app to consume temp token!
+    public async Task<IActionResult> VerifyEmail(string authToken)
     {
-        string secret = _serverSettings.JWTSecret;
-        var json = JwtBuilder.Create()
-                     .WithAlgorithm(new HMACSHA256Algorithm()) // symmetric
-                     .WithSecret(secret)
-                     .MustVerifySignature()
-                     .Decode<IDictionary<string, object>>(authToken);
-        // Console.WriteLine(json);
-        if (json.ContainsKey(ConfigUtil.JWT_USERNAME_KEY) && json.ContainsKey(ConfigUtil.JWT_ROLE_KEY) && json[ConfigUtil.JWT_ROLE_KEY].ToString() == ConfigUtil.JWT_DEFAULT_ROLE)
+        IDictionary<string, object> claims;
+        try
         {
-            using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
-            var prefixedUsername = json[ConfigUtil.JWT_USERNAME_KEY]?.ToString();
-            var verifiedUserName = prefixedUsername?.Replace(ConfigUtil.TEMP_TOKEN_PREFIX, "");
-            if (verifiedUserName == null || prefixedUsername == null)
-            {
-                _logger.LogError("Verified username is null!");
-                throw new UnauthorizedAccessException("The auth token was invalid!");
-            }
-            var generalCache = client.GetOrCreateCache<string, string>(ConfigUtil.TEMP_TOKEN_STORE_IGNITE);
-            string cachedToken;
-            if (!generalCache.TryGet(verifiedUserName, out cachedToken))
-            {
-                _logger.LogError("Cached token does not exist! ");
-                throw new UnauthorizedAccessException("The auth token was invalid!");
-            }
-            if (cachedToken.CompareTo(authToken) != 0)
-            {
-                _logger.LogError("Cached token does not match!.. ");
-                throw new UnauthorizedAccessException("The auth token was invalid!");
-            }
-            using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
-            try
-            {
-                connection.Open();
-                var mySqlCommandCheck2 = new MySql.Data.MySqlClient.MySqlCommand();
-                mySqlCommandCheck2.CommandText = "UPDATE sent_links_users SET verified_at = CURRENT_TIMESTAMP  WHERE username = @username and created_at > @checkdate";
-                mySqlCommandCheck2.Connection = connection;
-                mySqlCommandCheck2.Parameters.AddWithValue("@username", verifiedUserName);
-                mySqlCommandCheck2.Parameters.AddWithValue("@checkdate", DateTime.UtcNow.AddMinutes(-ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES));
-                if (mySqlCommandCheck2.ExecuteNonQuery() == 0)
-                { //newly registered, updated verified date
-                    var mySqlCommandCheck = new MySql.Data.MySqlClient.MySqlCommand();
-                    mySqlCommandCheck.CommandText = "UPDATE users SET verified_at = CURRENT_TIMESTAMP WHERE username = @username and verified_at is null";
-                    mySqlCommandCheck.Connection = connection;
-                    mySqlCommandCheck.Parameters.AddWithValue("@username", verifiedUserName);
-                    if ((long)mySqlCommandCheck.ExecuteNonQuery() > 0)
-                    {
-                        generalCache.RemoveAsync(verifiedUserName);
-                        return ConfigUtil.GetNewToken(_serverSettings, verifiedUserName); //issue new token for app-login
-                    }
-                    _logger.LogError("User {0} could not be set to verified, something went wrong.. ", verifiedUserName);
-                    return null;
-                }
-                else
-                { //already registered, fetched new sign on link
-                    generalCache.RemoveAsync(verifiedUserName);
-                    return ConfigUtil.GetNewToken(_serverSettings, verifiedUserName); //issue new token for app-login
-                }
-            }
-            finally
-            {
-                connection.Close();
-            }
-
+            claims = JwtBuilder.Create().WithAlgorithm(new HMACSHA256Algorithm())
+                .WithSecret(_serverSettings.JWTSecret).MustVerifySignature()
+                .Decode<IDictionary<string, object>>(authToken);
         }
-        else if (json.ContainsKey(ConfigUtil.JWT_USERNAME_KEY) && json.ContainsKey(ConfigUtil.JWT_ROLE_KEY) && json[ConfigUtil.JWT_ROLE_KEY].ToString() == ConfigUtil.JWT_TEST_ROLE)
+        catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            var prefixedUsername = json[ConfigUtil.JWT_USERNAME_KEY]?.ToString();
-            var verifiedUserName = prefixedUsername?.Replace(ConfigUtil.TEMP_TOKEN_PREFIX, "");
-            if (verifiedUserName != null && prefixedUsername != null && verifiedUserName.Equals("gtest"))
-            {
-                return ConfigUtil.GetNewToken(_serverSettings, verifiedUserName);
-            }
+            return Unauthorized("The sign-in link is invalid or expired.");
         }
-        else _logger.LogError("Missing proper token!");
-
-        throw new UnauthorizedAccessException("The auth token was invalid!");
+        var subject = (claims.TryGetValue(ConfigUtil.JWT_USERNAME_KEY, out var subjectClaim) ? subjectClaim?.ToString() : null);
+        var role = (claims.TryGetValue(ConfigUtil.JWT_ROLE_KEY, out var roleClaim) ? roleClaim?.ToString() : null);
+        if (role != ConfigUtil.JWT_DEFAULT_ROLE || subject == null ||
+            !subject.StartsWith(ConfigUtil.TEMP_TOKEN_PREFIX, StringComparison.Ordinal)) return Unauthorized();
+        var username = subject[ConfigUtil.TEMP_TOKEN_PREFIX.Length..];
+        using var connection = new MySqlConnection(_serverSettings.MysqlConnectionStoryPop);
+        await connection.OpenAsync();
+        using var transaction = await connection.BeginTransactionAsync();
+        using var consume = new MySqlCommand(@"UPDATE sent_links_users SET verified_at = UTC_TIMESTAMP()
+            WHERE username = @username AND token_hash = @hash AND verified_at IS NULL AND expires_at > UTC_TIMESTAMP()", connection, transaction);
+        consume.Parameters.AddWithValue("@username", username);
+        consume.Parameters.AddWithValue("@hash", EmailTokenStore.Hash(authToken));
+        if (await consume.ExecuteNonQueryAsync() != 1) return Unauthorized("The sign-in link is invalid, expired or already used.");
+        using var verify = new MySqlCommand(@"UPDATE users SET verified_at = COALESCE(verified_at, UTC_TIMESTAMP()) WHERE username = @username", connection, transaction);
+        verify.Parameters.AddWithValue("@username", username);
+        await verify.ExecuteNonQueryAsync();
+        using var exists = new MySqlCommand("SELECT COUNT(*) FROM users WHERE username = @username", connection, transaction);
+        exists.Parameters.AddWithValue("@username", username);
+        if (Convert.ToInt64(await exists.ExecuteScalarAsync()) != 1) return Unauthorized();
+        await transaction.CommitAsync();
+        // Preserve the original Android response: a raw JWT string.
+        return Content(ConfigUtil.GetNewToken(_serverSettings, username), "text/plain");
     }
-
 
     [HttpGet("exists/{username}")]
     public StatusCodeResult UsernameExists(string username)
@@ -257,7 +183,7 @@ public class AccountController : ControllerBase
         {
             connection.Open();
             var mySqlCommand = new MySql.Data.MySqlClient.MySqlCommand();
-            mySqlCommand.CommandText = "SELECT BIN_TO_UUID(device_uuid) as device_uuid, email, username, profile_icon, profile_background_image, profile_text, DATE_FORMAT(following_latest_check_at, '%Y-%m-%dT%TZ') as following_latest_check_at,  wallet_address from users WHERE username = @username";
+            mySqlCommand.CommandText = "SELECT BIN_TO_UUID(device_uuid) as device_uuid, email, full_name, username, profile_icon, profile_background_image, profile_text, DATE_FORMAT(following_latest_check_at, '%Y-%m-%dT%TZ') as following_latest_check_at,  wallet_address from users WHERE username = @username";
             mySqlCommand.Connection = connection;
             mySqlCommand.Parameters.AddWithValue("@username", username);
             using var reader = mySqlCommand.ExecuteReader();
@@ -267,7 +193,7 @@ public class AccountController : ControllerBase
                 string? profileIcon = reader.IsDBNull(reader.GetOrdinal("profile_icon")) ? null : reader.GetString("profile_icon");
                 string? profileBackgroundImage = reader.IsDBNull(reader.GetOrdinal("profile_background_image")) ? null : reader.GetString("profile_background_image");
                 string email = reader.GetString("email");
-                string device_uuid = reader.GetString("device_uuid");
+                string device_uuid = reader.IsDBNull(reader.GetOrdinal("device_uuid")) ? "" : reader.GetString("device_uuid");
                 string refreshToken = ConfigUtil.GetNewToken(_serverSettings, username, DateTime.Now.AddDays(30));
                 string? profile_text = reader.IsDBNull(reader.GetOrdinal("profile_text")) ? null : reader.GetString("profile_text");
                 string followingLatestCheck = reader.GetString("following_latest_check_at");
@@ -277,6 +203,7 @@ public class AccountController : ControllerBase
                  _serverSettings.SwiftTempAuthUser != "", _serverSettings.CDNPublishLargePath, _serverSettings.CDNPublishSmallPath, 
                  _serverSettings.CDNPublishUserMessagePath, _serverSettings.CDNRequestLargePath,_serverSettings.CDNRequestSmallPath,
                   _serverSettings.CDNRequestUserMessagePath, _serverSettings.ImageStaticPath, _serverSettings.RequireArticleSources, _serverSettings.RequireArticleReview);
+                accountInfo.FullName = reader.IsDBNull(reader.GetOrdinal("full_name")) ? null : reader.GetString("full_name");
             }
             reader.Close();
             if (accountInfo == null)
@@ -331,12 +258,10 @@ public class AccountController : ControllerBase
         using MySqlConnection connection = new MySqlConnection(ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings));
         try
         {
-            using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
             connection.Open();
-            var aCache = client.GetOrCreateCache<string, StorySavedModel>("storyarticle");
 
             var mySqlCommandDeleteLinks = new MySql.Data.MySqlClient.MySqlCommand();
-            mySqlCommandDeleteLinks.CommandText = "DELETE FROM sent_links_users WHERE username = @username";
+            mySqlCommandDeleteLinks.CommandText = "DELETE FROM sent_links_users WHERE username = @username OR email IN (SELECT email FROM users WHERE username = @username)";
             mySqlCommandDeleteLinks.Connection = connection;
             mySqlCommandDeleteLinks.Parameters.AddWithValue("@username", username);
             await mySqlCommandDeleteLinks.ExecuteNonQueryAsync();
@@ -393,12 +318,7 @@ public class AccountController : ControllerBase
                     _logger.LogError("Error occured when deleting post '{0}' in GORSE for user {1}, statusCode: {2}, response:" + deleteRespone.Content.ReadAsStringAsync().Result, toDelete, username, deleteRespone.StatusCode);
                     return StatusCode(500);
                 }
-                var deleteResult = await aCache.WithKeepBinary<string, StorySavedModel>().RemoveAsync(toDelete);
-                if (!deleteResult)
-                {
-                    _logger.LogError("Error occured when deleting post '{0}' in Ignite for username {1}", toDelete, username);
-                    return StatusCode(500);
-                }
+
             }
             var mySqlCommandStoryDelete = new MySql.Data.MySqlClient.MySqlCommand();
             mySqlCommandStoryDelete.CommandText = "DELETE FROM user_stories WHERE username = @username";
@@ -437,10 +357,19 @@ public class AccountController : ControllerBase
             await mySqlCommandWalletDelete.ExecuteNonQueryAsync();
 
             var mySqlCommandDeleteMessages = new MySql.Data.MySqlClient.MySqlCommand();
-            mySqlCommandDeleteMessages.CommandText = "DELETE FROM user_message WHERE username = @username";
+            mySqlCommandDeleteMessages.CommandText = "DELETE FROM user_message WHERE username = @username OR target_username = @username";
             mySqlCommandDeleteMessages.Connection = connection;
             mySqlCommandDeleteMessages.Parameters.AddWithValue("@username", username);
             await mySqlCommandDeleteMessages.ExecuteNonQueryAsync();
+
+            foreach (var cleanup in new[] {
+                "DELETE FROM user_contact_approved WHERE username=@username OR target_username=@username",
+                "DELETE FROM mail_queue WHERE email IN (SELECT email FROM users WHERE username=@username)" })
+            {
+                using var clean = new MySqlCommand(cleanup, connection);
+                clean.Parameters.AddWithValue("@username", username);
+                await clean.ExecuteNonQueryAsync();
+            }
 
             var mySqlCommandRewardsDeleteUser = new MySql.Data.MySqlClient.MySqlCommand();
             mySqlCommandRewardsDeleteUser.CommandText = "DELETE FROM users WHERE username = @username";
@@ -465,14 +394,13 @@ public class AccountController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> CreateAccount([FromBody] AccountInfo newUser)
     {
-        if (string.IsNullOrEmpty(newUser?.Email) || string.IsNullOrEmpty(newUser?.UserUuid) || string.IsNullOrEmpty(newUser?.Username))
+        if (newUser?.Username?.StartsWith(ConfigUtil.TEMP_TOKEN_PREFIX, StringComparison.Ordinal) == true || newUser?.Username?.Length > 20 || !Guid.TryParse(newUser?.UserUuid, out _) || !System.Net.Mail.MailAddress.TryCreate(newUser?.Email, out _) || string.IsNullOrEmpty(newUser?.Email) || string.IsNullOrEmpty(newUser?.UserUuid) || string.IsNullOrEmpty(newUser?.Username))
         {
             return StatusCode(409);
         }
 
         var connectionString = ConfigUtil.GetMysqlConnectionStringForDatabase(ConfigUtil.TargetDatabase.STORYPOP, _serverSettings);
         using var connection = new MySqlConnection(connectionString);
-        using var client = Ignition.StartClient(ConfigUtil.GetIgniteConfiguration(_serverSettings));
 
         MySqlTransaction? myTrans = null;
 
@@ -487,23 +415,24 @@ public class AccountController : ControllerBase
             var count = Convert.ToInt64(await checkCmd.ExecuteScalarAsync());
             if (count > 0) return StatusCode(409);
 
-            var lowerUsername = newUser.Username.ToLower();
+            var lowerUsername = newUser.Username.ToLowerInvariant();
             myTrans = await connection.BeginTransactionAsync();
 
             // 2. Insert User
             using var insertCmd = new MySqlCommand(
-                @"INSERT INTO users (device_uuid, email, username, ip_address) 
-              VALUES (UUID_TO_BIN(@device_uuid), @email, @username, INET6_ATON(@ip_address))",
+                @"INSERT INTO users (device_uuid, email, username, ip_address, full_name) 
+              VALUES (UUID_TO_BIN(@device_uuid), @email, @username, INET6_ATON(@ip_address), @full_name)",
                 connection, myTrans);
 
+            insertCmd.Parameters.AddWithValue("@full_name", string.IsNullOrWhiteSpace(newUser.FullName) ? DBNull.Value : newUser.FullName.Trim());
             insertCmd.Parameters.AddWithValue("@device_uuid", newUser.UserUuid);
             insertCmd.Parameters.AddWithValue("@username", lowerUsername);
             insertCmd.Parameters.AddWithValue("@email", newUser.Email);
-            insertCmd.Parameters.AddWithValue("@ip_address", Request.HttpContext.Connection.RemoteIpAddress?.ToString());
+            insertCmd.Parameters.AddWithValue("@ip_address", Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "::");
             await insertCmd.ExecuteNonQueryAsync();
 
             // 3. Check Invites
-            using var inviteCmd = new MySqlCommand("SELECT username_source FROM user_invite WHERE email = @email LIMIT 1", connection);
+            using var inviteCmd = new MySqlCommand("SELECT username_source FROM user_invite WHERE email = @email LIMIT 1", connection, myTrans);
             inviteCmd.Parameters.AddWithValue("@email", newUser.Email);
 
             var inviteUsername = (string?)await inviteCmd.ExecuteScalarAsync();
@@ -526,12 +455,10 @@ public class AccountController : ControllerBase
                 }
             }
 
-            // 4. Ignite Cache (Sync)
-            var generalCache = client.GetOrCreateCache<string, string>(ConfigUtil.TEMP_TOKEN_STORE_IGNITE)
-                .WithExpiryPolicy(new ExpiryPolicy(TimeSpan.FromMinutes(ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES), null, null));
-
-            var tempToken = ConfigUtil.GetNewToken(_serverSettings, ConfigUtil.TEMP_TOKEN_PREFIX + lowerUsername, DateTime.Now.AddMinutes(ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES));
-            generalCache.Put(lowerUsername, tempToken);
+            // Store only a SHA-256 digest; enqueue the original token for the existing mail worker.
+            var tempToken = ConfigUtil.GetNewToken(_serverSettings, ConfigUtil.TEMP_TOKEN_PREFIX + lowerUsername,
+                DateTime.UtcNow.AddMinutes(ConfigUtil.SIGN_IN_TOKEN_EXPIRATION_MINUTES), ConfigUtil.JWT_DEFAULT_ROLE);
+            await EmailTokenStore.InsertAsync(connection, myTrans, lowerUsername, tempToken, HttpContext.Connection.RemoteIpAddress?.ToString());
 
             // 5. Queue Email
             using var emailCmd = new MySqlCommand(
@@ -617,7 +544,7 @@ public class AccountController : ControllerBase
             mySqlCommandInsert.Parameters.AddWithValue("@wallet", address);
             mySqlCommandInsert.Parameters.AddWithValue("@username", username);
             mySqlCommandInsert.Parameters.AddWithValue("@deviceUUID", deviceId);
-            mySqlCommandInsert.Parameters.AddWithValue("@ip_address", Request.HttpContext.Connection.RemoteIpAddress?.ToString());
+            mySqlCommandInsert.Parameters.AddWithValue("@ip_address", Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "::");
             if ((long)mySqlCommandInsert.ExecuteNonQuery() <= 0)
             {
                 _logger.LogError("User {0} wallet-history could not be updated, could not set wallet: {1}, something went wrong.. ", username, address);
@@ -674,7 +601,7 @@ public class AccountController : ControllerBase
             mySqlCommandInsert.Parameters.AddWithValue("@wallet", address);
             mySqlCommandInsert.Parameters.AddWithValue("@username", username);
             mySqlCommandInsert.Parameters.AddWithValue("@deviceUUID", deviceId);
-            mySqlCommandInsert.Parameters.AddWithValue("@ip_address", Request.HttpContext.Connection.RemoteIpAddress?.ToString());
+            mySqlCommandInsert.Parameters.AddWithValue("@ip_address", Request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "::");
             if ((long)mySqlCommandInsert.ExecuteNonQuery() > 0)
             {
                 var mySqlCommandCheck = new MySql.Data.MySqlClient.MySqlCommand();

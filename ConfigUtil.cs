@@ -5,12 +5,10 @@ using JWT.Serializers;
 using JWT.Extensions.AspNetCore.Factories;
 using JWT.Extensions.AspNetCore;
 using System.Security.Claims;
-using Apache.Ignite.Core.Client;
 using Microsoft.Extensions.Options;
 
 public static class ConfigUtil
 {
-    public const string TEMP_TOKEN_STORE_IGNITE = "TEMPTOKENSTORE";
 
     public const string TEMP_TOKEN_PREFIX = "@temp_";
     public enum TargetDatabase
@@ -25,21 +23,13 @@ public static class ConfigUtil
     public const string JWT_ADMIN_ROLE = "ADMIN_USER";
     public const int SIGN_IN_TOKEN_EXPIRATION_MINUTES = 30;
 
-    public static IgniteClientConfiguration GetIgniteConfiguration(ServerSettings settings)
-    {
-        return new IgniteClientConfiguration
-        {
-            Endpoints = new[] { settings.IgniteEndpoint }
-        };
-    }
-
-
     public static string GetNewToken(ServerSettings _serverSettings, string username, DateTime? expiration = null, string? tokenRole = null)
     { //VERIFY USER BEFORE ISSUING TOKEN!!
         var isAdminUser = _serverSettings.AdminUsername.Equals(username, StringComparison.OrdinalIgnoreCase);
         var payload = new Dictionary<string, object>
 {
-    {ConfigUtil.JWT_USERNAME_KEY,  username.ToLower()},
+    {ConfigUtil.JWT_USERNAME_KEY,  username.ToLowerInvariant()},
+    {"jti", Guid.NewGuid().ToString("N")},
     { ConfigUtil.JWT_ROLE_KEY, tokenRole ?? (isAdminUser ? ConfigUtil.JWT_ADMIN_ROLE : ConfigUtil.JWT_DEFAULT_ROLE)}
 };
         string secret = _serverSettings.JWTSecret;
